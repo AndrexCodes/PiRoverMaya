@@ -47,6 +47,8 @@ PINS = {
     'BUZZER': 27
 }
 
+servo_pwm, motor_pwm_a, motor_pwm_b = None, None, None
+
 # ========== SETUP ==========
 def setup_gpio():
     """Initialize GPIO settings"""
