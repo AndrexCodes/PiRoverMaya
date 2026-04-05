@@ -47,13 +47,13 @@ PINS = {
     'BUZZER': 27
 }
 
-servo_pwm, motor_pwm_a, motor_pwm_b = None, None, None
-
 # ========== SETUP ==========
 def setup_gpio():
     """Initialize GPIO settings"""
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
+
+    global servo_pwm, motor_pwm_a, motor_pwm_b
     
     # Setup outputs
     outputs = [
@@ -89,10 +89,20 @@ def setup_gpio():
 
 def cleanup():
     """Clean up GPIO and PWM"""
-    servo_pwm.stop()
-    motor_pwm_a.stop()
-    motor_pwm_b.stop()
-    GPIO.cleanup()
+    # Stop PWM objects only if they were created
+    for name in ('servo_pwm', 'motor_pwm_a', 'motor_pwm_b'):
+        pwm = globals().get(name)
+        if pwm is not None:
+            try:
+                pwm.stop()
+            except Exception:
+                pass
+
+    try:
+        GPIO.cleanup()
+    except Exception:
+        pass
+
     print("\n✅ GPIO cleaned up")
 
 # ========== TEST FUNCTIONS ==========
