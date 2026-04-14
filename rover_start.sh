@@ -50,15 +50,13 @@ sleep 1
 sudo sdptool add SP
 
 # Configure bluetoothctl for persistent discoverable + pairable
-bluetoothctl << EOF
-power on
-agent on
-default-agent
-pairable on
-pairable-timeout 0
-discoverable on
-discoverable-timeout 0
-EOF
+bluetoothctl power on
+bluetoothctl agent on
+bluetoothctl default-agent
+bluetoothctl pairable on
+bluetoothctl pairable-timeout 0
+bluetoothctl discoverable on
+bluetoothctl discoverable-timeout 0
 
 # Verify current adapter state
 echo "Bluetooth adapter status:"
