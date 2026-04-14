@@ -25,6 +25,23 @@ echo "Configuring Bluetooth..."
 sudo systemctl restart bluetooth
 sleep 2
 
+# Ensure BlueZ keeps discoverability available longer-term
+sudo mkdir -p /etc/bluetooth
+if ! grep -q '^\s*DiscoverableTimeout\s*=' /etc/bluetooth/main.conf 2>/dev/null; then
+    echo 'DiscoverableTimeout = 0' | sudo tee -a /etc/bluetooth/main.conf >/dev/null
+else
+    sudo sed -i 's/^\s*DiscoverableTimeout\s*=.*/DiscoverableTimeout = 0/' /etc/bluetooth/main.conf
+fi
+
+if ! grep -q '^\s*PairableTimeout\s*=' /etc/bluetooth/main.conf 2>/dev/null; then
+    echo 'PairableTimeout = 0' | sudo tee -a /etc/bluetooth/main.conf >/dev/null
+else
+    sudo sed -i 's/^\s*PairableTimeout\s*=.*/PairableTimeout = 0/' /etc/bluetooth/main.conf
+fi
+
+sudo systemctl restart bluetooth
+sleep 2
+
 # Make sure adapter is unblocked
 sudo rfkill unblock bluetooth
 sleep 1
@@ -46,6 +63,21 @@ EOF
 # Verify current adapter state
 echo "Bluetooth adapter status:"
 bluetoothctl show | grep -E "Powered:|Discoverable:|Pairable:|DiscoverableTimeout:|PairableTimeout:" || true
+
+# Keep discoverability enabled in case BlueZ drops it after the bluetoothctl session exits
+(
+    while true; do
+        if ! bluetoothctl show | grep -q "Discoverable: yes"; then
+            bluetoothctl << EOF
+discoverable on
+discoverable-timeout 0
+pairable on
+pairable-timeout 0
+EOF
+        fi
+        sleep 20
+    done
+) &
 
 echo "✅ Bluetooth configured and discoverable"
 
