@@ -27,6 +27,8 @@ sleep 2
 
 # Ensure BlueZ keeps discoverability available longer-term
 sudo mkdir -p /etc/bluetooth
+
+# Configure Bluetooth daemon for auto-pairing
 if ! grep -q '^\s*DiscoverableTimeout\s*=' /etc/bluetooth/main.conf 2>/dev/null; then
     echo 'DiscoverableTimeout = 0' | sudo tee -a /etc/bluetooth/main.conf >/dev/null
 else
@@ -37,6 +39,11 @@ if ! grep -q '^\s*PairableTimeout\s*=' /etc/bluetooth/main.conf 2>/dev/null; the
     echo 'PairableTimeout = 0' | sudo tee -a /etc/bluetooth/main.conf >/dev/null
 else
     sudo sed -i 's/^\s*PairableTimeout\s*=.*/PairableTimeout = 0/' /etc/bluetooth/main.conf
+fi
+
+# Enable experimental features for better compatibility
+if ! grep -q "Experimental = true" /etc/bluetooth/main.conf 2>/dev/null; then
+    echo "Experimental = true" | sudo tee -a /etc/bluetooth/main.conf >/dev/null
 fi
 
 sudo systemctl restart bluetooth
@@ -64,7 +71,7 @@ EOF
     sudo chmod 755 /usr/local/bin/bt-autopair
 fi
 
-# Start bt-agent with NoInputNoOutput capability
+# Start bt-agent with NoInputNoOutput capability (no PIN required!)
 sudo /usr/local/bin/bt-autopair
 
 # Create systemd service for auto-pairing if it doesn't exist
@@ -90,8 +97,9 @@ fi
 sudo sdptool add SP
 
 # Configure bluetoothctl for persistent discoverable + pairable
+# CRITICAL: Use NoInputNoOutput (NOT DisplayOnly) for headless operation
 bluetoothctl power on
-bluetoothctl agent DisplayOnly
+bluetoothctl agent NoInputNoOutput
 bluetoothctl default-agent
 bluetoothctl pairable on
 bluetoothctl pairable-timeout 0
@@ -156,11 +164,15 @@ while [ $CONNECTED -eq 0 ] && [ $ATTEMPTS -lt 60 ]; do  # Wait up to 5 minutes
         echo "Binding RFCOMM to $CONNECTED_MAC"
         sudo rfcomm bind /dev/rfcomm0 $CONNECTED_MAC 1
         
+        # Wait for RFCOMM device to be ready
+        sleep 2
+        
         # Verify binding
         if [ -e /dev/rfcomm0 ]; then
             echo "✅ RFCOMM bound successfully to /dev/rfcomm0"
+            ls -la /dev/rfcomm0
         else
-            echo "⚠️  RFCOMM binding failed, but continuing..."
+            echo "⚠️ RFCOMM binding failed, but continuing..."
         fi
         break
     fi
