@@ -591,6 +591,7 @@ class NavigationSystem:
     
     def process_commands(self):
         """Process incoming Bluetooth commands"""
+        global ROVER_SPEED
         command = self.bluetooth.get_last_command()
         
         if not command:
@@ -616,7 +617,6 @@ class NavigationSystem:
         elif command.get('type') == 'speed':
             # Change rover speed
             new_speed = command.get('speed', ROVER_SPEED)
-            global ROVER_SPEED
             ROVER_SPEED = max(0, min(100, new_speed))
             self.current_speed = ROVER_SPEED
             self.motors.set_speed(self.current_speed)
