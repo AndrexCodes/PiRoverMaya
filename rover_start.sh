@@ -91,7 +91,7 @@ sudo sdptool add SP
 
 # Configure bluetoothctl for persistent discoverable + pairable
 bluetoothctl power on
-bluetoothctl agent NoInputNoOutput
+bluetoothctl agent DisplayOnly
 bluetoothctl default-agent
 bluetoothctl pairable on
 bluetoothctl pairable-timeout 0
