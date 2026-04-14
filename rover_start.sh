@@ -1,7 +1,5 @@
 #!/bin/bash
 
-#!/bin/bash
-
 # ============================================
 # Rover Bluetooth Auto-Start Script
 # ============================================
@@ -23,31 +21,31 @@ sleep 10
 # ============================================
 echo "Configuring Bluetooth..."
 
-# Kill any existing bluetooth agents
-sudo pkill -f bluetoothd 2>/dev/null
+# Use service manager for reliable daemon state
+sudo systemctl restart bluetooth
 sleep 2
 
-# Start bluetooth daemon with serial profile support
-sudo bluetoothd -C &
-sleep 2
+# Make sure adapter is unblocked
+sudo rfkill unblock bluetooth
+sleep 1
 
 # Add Serial Port Profile
 sudo sdptool add SP
 
-# Configure bluetoothctl for auto-discovery and pairing
-expect << EOF
-set timeout 10
-spawn bluetoothctl
-send "agent on\r"
-send "default-agent\r"
-send "discoverable on\r"
-send "pairable on\r"
-send "discoverable-timeout 0\r"
-send "pairable-timeout 0\r"
-send "scan on\r"
-sleep 2
-expect eof
+# Configure bluetoothctl for persistent discoverable + pairable
+bluetoothctl << EOF
+power on
+agent on
+default-agent
+pairable on
+pairable-timeout 0
+discoverable on
+discoverable-timeout 0
 EOF
+
+# Verify current adapter state
+echo "Bluetooth adapter status:"
+bluetoothctl show | grep -E "Powered:|Discoverable:|Pairable:|DiscoverableTimeout:|PairableTimeout:" || true
 
 echo "✅ Bluetooth configured and discoverable"
 
