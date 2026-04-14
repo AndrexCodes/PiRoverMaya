@@ -19,7 +19,6 @@ import serial.tools.list_ports
 
 # ========== BLE CONFIGURATION ==========
 BLE_SERVICE_UUID = "12345678-1234-1234-1234-123456789abc"
-BLE_CHARACTERISTIC_UUID = "abcd1234-5678-90ab-cdef-1234567890ab"
 DEVICE_NAME = 'PiRover'
 BLE_ADVERTISING_INTERVAL_MS = 200  # 200ms = 5Hz broadcast rate
 
@@ -60,152 +59,298 @@ PINS = {
 }
 
 # ========== GLOBAL SPEED CONFIGURATION ==========
-# ⚙️ ADJUST THIS VALUE TO CHANGE ROVER SPEED (0-100)
-# 0 = stopped, 30 = slow, 60 = medium, 100 = maximum
 ROVER_SPEED = 40  # Default: 40% speed
 
 # Speed presets for different conditions
 SPEED_PRESETS = {
-    'CRUISE': 60,      # Normal cruising speed
-    'SLOW': 40,        # Slow speed (obstacle near)
-    'TURN': 50,        # Turning speed
-    'BACKUP': 35,      # Backing up speed
-    'MIN': 20,         # Minimum operational speed
-    'MAX': 85          # Maximum safe speed
+    'CRUISE': 60,
+    'SLOW': 40,
+    'TURN': 50,
+    'BACKUP': 35,
+    'MIN': 20,
+    'MAX': 85
 }
 
 # ========== NAVIGATION CONSTANTS ==========
-OBSTACLE_THRESHOLD = 30  # cm (start slowing down)
+OBSTACLE_THRESHOLD = 30  # cm
 SAFE_DISTANCE = 40       # cm
-CRITICAL_DISTANCE = 15   # cm (emergency stop)
+CRITICAL_DISTANCE = 15   # cm
 TURN_DURATION = 0.8      # seconds
 
-# Direction mapping for IR sensors (angles relative to robot)
+# Direction mapping for IR sensors
 SENSOR_ANGLES = {
-    'IR_TOP_LEFT': 135,      # 135 deg (top-left quadrant)
-    'IR_TOP_RIGHT': 45,      # 45 deg (top-right quadrant)
-    'IR_BOTTOM_LEFT': 225,   # 225 deg (bottom-left quadrant)
-    'IR_BOTTOM_RIGHT': 315   # 315 deg (bottom-right quadrant)
+    'IR_TOP_LEFT': 135,
+    'IR_TOP_RIGHT': 45,
+    'IR_BOTTOM_LEFT': 225,
+    'IR_BOTTOM_RIGHT': 315
 }
 
-class BLEReceiver:
-    """Handles BLE packet reception using bluetoothctl"""
+class BLEManager:
+    """Handles BLE setup, advertising, and packet reception"""
     
     def __init__(self):
         self.running = False
-        self.receive_thread = None
+        self.advertising_process = None
         self.command_queue = deque(maxlen=10)
-        self.last_packet_time = 0
+        self.current_ad_data = None
+        self.advertising_pid = None
         
-    def setup_ble_advertising(self):
-        """Setup BLE advertising for broadcasting"""
+    def setup_bluetooth_interface(self):
+        """Initialize and configure Bluetooth interface"""
+        print("\n🔵 Setting up Bluetooth interface...")
+        
         try:
-            # Kill any existing bluetoothctl processes
-            subprocess.run(['sudo', 'killall', 'bluetoothctl'], stderr=subprocess.DEVNULL)
-            time.sleep(1)
+            # Check if Bluetooth is available
+            result = subprocess.run(['hciconfig'], capture_output=True, text=True)
+            if 'No such file' in result.stderr or not result.stdout.strip():
+                print("❌ Bluetooth adapter not found!")
+                print("   Please ensure:")
+                print("   1. Bluetooth dongle is connected")
+                print("   2. Run: sudo apt install bluetooth bluez bluez-tools")
+                return False
             
-            # Start bluetoothctl with commands
-            proc = subprocess.Popen(['bluetoothctl'], 
-                                   stdin=subprocess.PIPE,
-                                   stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL,
-                                   text=True)
+            # Find Bluetooth interface (usually hci0)
+            hci_result = subprocess.run(['hcitool', 'dev'], capture_output=True, text=True)
+            lines = hci_result.stdout.strip().split('\n')
+            if len(lines) < 2:
+                print("❌ No Bluetooth device found")
+                return False
             
-            commands = [
-                'power on',
-                'discoverable on',
-                'pairable off',  # No pairing required
-                f'advertise on',
-                f'advertise uuid {BLE_SERVICE_UUID}',
-                f'advertise service {BLE_SERVICE_UUID}',
-                f'advertise data 02 01 06',  # Flags: LE General Discoverable + BR/EDR not supported
-                f'advertise name {DEVICE_NAME}',
-                'advertise tx-power on',
-                'advertise interval 200',  # 200ms interval
-                'advertise on'
-            ]
+            self.bt_interface = lines[1].split()[0]
+            print(f"✅ Found Bluetooth interface: {self.bt_interface}")
             
-            for cmd in commands:
-                proc.stdin.write(cmd + '\n')
-                proc.stdin.flush()
-                time.sleep(0.1)
+            # Bring up the interface
+            subprocess.run(['sudo', 'hciconfig', self.bt_interface, 'up'], capture_output=True)
+            subprocess.run(['sudo', 'hciconfig', self.bt_interface, 'piscan'], capture_output=True)
             
-            print(f"✅ BLE advertising started as '{DEVICE_NAME}' (No pairing required)")
+            # Set device name
+            subprocess.run(['sudo', 'hciconfig', self.bt_interface, 'name', DEVICE_NAME], capture_output=True)
+            
+            # Check status
+            status = subprocess.run(['hciconfig', self.bt_interface], capture_output=True, text=True)
+            print(f"✅ Bluetooth interface configured")
+            print(f"   Device: {DEVICE_NAME}")
+            print(f"   Address: {self.get_bt_address()}")
+            
             return True
             
         except Exception as e:
-            print(f"⚠️ BLE advertising setup error: {e}")
+            print(f"❌ Bluetooth setup error: {e}")
             return False
     
-    def setup_ble_scan(self):
-        """Setup BLE scanning to receive packets"""
+    def get_bt_address(self):
+        """Get Bluetooth MAC address"""
         try:
-            # Start scanning for BLE packets
-            scan_proc = subprocess.Popen(['sudo', 'btmgmt', 'scan', 'on'],
-                                        stdout=subprocess.DEVNULL,
-                                        stderr=subprocess.DEVNULL)
-            
-            # Start bluetoothctl for receiving
-            self.receive_proc = subprocess.Popen(['bluetoothctl', 'scan', 'on'],
-                                                stdout=subprocess.PIPE,
-                                                stderr=subprocess.DEVNULL,
-                                                text=True)
-            
-            print("✅ BLE scanning enabled for receiving commands")
-            return True
-        except Exception as e:
-            print(f"⚠️ BLE scan setup error: {e}")
-            return False
-    
-    def start_receiving(self):
-        """Start BLE packet reception thread"""
-        self.running = True
-        self.receive_thread = threading.Thread(target=self._receive_loop)
-        self.receive_thread.daemon = True
-        self.receive_thread.start()
-        
-    def _receive_loop(self):
-        """Background thread for receiving BLE packets"""
-        while self.running:
-            try:
-                if hasattr(self, 'receive_proc') and self.receive_proc:
-                    # Read line from bluetoothctl output
-                    line = self.receive_proc.stdout.readline()
-                    if line:
-                        # Parse BLE packet - look for manufacturer specific data
-                        # Format: "Device XX:XX:XX:XX:XX:XX RSSI: -XX Data: [hex]"
-                        packet = self._parse_ble_packet(line)
-                        if packet:
-                            self.command_queue.append(packet)
-                            self.last_packet_time = time.time()
-            except Exception as e:
-                pass
-            time.sleep(0.01)
-    
-    def _parse_ble_packet(self, line):
-        """Parse BLE packet for command data"""
-        try:
-            # Look for data in the packet
-            if 'Data:' in line:
-                # Extract hex data
-                data_part = line.split('Data:')[-1].strip()
-                hex_bytes = data_part.split()
-                
-                # Convert hex to bytes
-                packet_bytes = bytes([int(b, 16) for b in hex_bytes if len(b) == 2])
-                
-                # Try to decode as JSON command
-                if packet_bytes:
-                    try:
-                        command_str = packet_bytes.decode('utf-8')
-                        command = json.loads(command_str)
-                        return command
-                    except:
-                        # Try as simple text command
-                        return {'type': 'raw', 'command': packet_bytes.decode('utf-8', errors='ignore')}
+            result = subprocess.run(['hcitool', 'dev'], capture_output=True, text=True)
+            lines = result.stdout.strip().split('\n')
+            if len(lines) >= 2:
+                return lines[1].split()[1]
         except:
             pass
-        return None
+        return "Unknown"
+    
+    def install_bluez_tools(self):
+        """Install required Bluetooth tools if missing"""
+        print("\n📦 Checking required packages...")
+        
+        # Check for bluetoothctl
+        result = subprocess.run(['which', 'bluetoothctl'], capture_output=True)
+        if result.returncode != 0:
+            print("Installing bluez...")
+            subprocess.run(['sudo', 'apt', 'update'], capture_output=True)
+            subprocess.run(['sudo', 'apt', 'install', '-y', 'bluez', 'bluez-tools'], capture_output=True)
+        
+        # Check for Python BLE library
+        try:
+            import bluetooth
+        except ImportError:
+            print("Installing PyBluez...")
+            subprocess.run(['sudo', 'pip3', 'install', 'pybluez'], capture_output=True)
+        
+        print("✅ Required packages installed")
+        return True
+    
+    def start_ble_advertising(self):
+        """Start BLE advertising using hcitool (most reliable method)"""
+        print("\n📡 Starting BLE advertising...")
+        
+        # Stop any existing advertising
+        self.stop_ble_advertising()
+        
+        # Set up advertising packet format
+        # Format: AD Type | AD Data
+        # 0x01 = Flags, 0x06 = LE General Discoverable + BR/EDR not supported
+        # 0x09 = Complete Local Name
+        # 0xFF = Manufacturer Specific Data
+        
+        try:
+            # Create advertising data using hcitool
+            # First, set the advertising data
+            cmd_set_ad = f"sudo hcitool -i {self.bt_interface} cmd 0x08 0x0008 1e 02 01 06 0a 09 50 69 52 6f 76 65 72 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+            subprocess.run(cmd_set_ad, shell=True, capture_output=True)
+            
+            # Enable advertising
+            cmd_enable_ad = f"sudo hcitool -i {self.bt_interface} cmd 0x08 0x000a 01"
+            subprocess.run(cmd_enable_ad, shell=True, capture_output=True)
+            
+            print(f"✅ BLE advertising started on {self.bt_interface}")
+            print(f"   Device name: {DEVICE_NAME}")
+            print("   No pairing required - advertising as beacon")
+            return True
+            
+        except Exception as e:
+            print(f"⚠️ HCI tool advertising failed: {e}")
+            return self.start_ble_advertising_alt()
+    
+    def start_ble_advertising_alt(self):
+        """Alternative method using bluetoothctl"""
+        try:
+            # Start bluetoothctl in background
+            self.advertising_process = subprocess.Popen(
+                ['bluetoothctl'],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True
+            )
+            
+            if self.advertising_process:
+                commands = [
+                    'power on',
+                    'discoverable on',
+                    'pairable off',
+                    f'advertise on',
+                    f'advertise name {DEVICE_NAME}',
+                    'advertise service 12345678-1234-1234-1234-123456789abc',
+                    'advertise interval 200',
+                    'advertise tx-power on',
+                ]
+                
+                for cmd in commands:
+                    if self.advertising_process.stdin:
+                        self.advertising_process.stdin.write(cmd + '\n')
+                        self.advertising_process.stdin.flush()
+                        time.sleep(0.1)
+                
+                print(f"✅ BLE advertising started (alt method)")
+                return True
+        except Exception as e:
+            print(f"⚠️ Alt advertising failed: {e}")
+        
+        return False
+    
+    def stop_ble_advertising(self):
+        """Stop BLE advertising"""
+        try:
+            # Disable advertising via hcitool
+            subprocess.run(f"sudo hcitool -i {self.bt_interface} cmd 0x08 0x000a 00", shell=True, capture_output=True)
+        except:
+            pass
+        
+        if self.advertising_process:
+            try:
+                if self.advertising_process.stdin:
+                    self.advertising_process.stdin.write('quit\n')
+                    self.advertising_process.stdin.flush()
+                self.advertising_process.terminate()
+            except:
+                pass
+            self.advertising_process = None
+    
+    def broadcast_data(self, data_dict):
+        """Broadcast data using manufacturer specific data"""
+        if not self.running:
+            return
+        
+        try:
+            # Convert data to JSON string
+            json_str = json.dumps(data_dict)
+            # Limit to 25 bytes to fit in advertising packet
+            if len(json_str) > 25:
+                json_str = json_str[:25]
+            
+            # Convert to bytes
+            data_bytes = json_str.encode('utf-8')
+            
+            # Create manufacturer specific data packet
+            # Format: 0x08 0x0008 [length] 0xFF [company ID (2 bytes)] [data]
+            # Using 0xFFFF as test company ID
+            length = len(data_bytes) + 3  # +3 for type(1) + company ID(2)
+            
+            # Build command
+            cmd_parts = ['sudo', 'hcitool', '-i', self.bt_interface, 'cmd', '0x08', '0x0008']
+            
+            # Add length and data
+            cmd_parts.append(f'{length:02x}')
+            cmd_parts.append('ff')  # Manufacturer specific data type
+            cmd_parts.append('ff')  # Company ID low byte
+            cmd_parts.append('ff')  # Company ID high byte
+            
+            # Add data bytes
+            for byte in data_bytes:
+                cmd_parts.append(f'{byte:02x}')
+            
+            # Pad to minimum length
+            while len(cmd_parts) < 15:
+                cmd_parts.append('00')
+            
+            # Execute command
+            subprocess.run(' '.join(cmd_parts), shell=True, capture_output=True)
+            
+        except Exception as e:
+            pass  # Silent fail to avoid console spam
+    
+    def setup_rfcomm_server(self):
+        """Setup RFCOMM server for receiving commands (no pairing)"""
+        try:
+            # Kill existing rfcomm processes
+            subprocess.run(['sudo', 'killall', 'rfcomm'], stderr=subprocess.DEVNULL)
+            
+            # Create a simple socket server
+            import socket
+            
+            self.server_socket = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
+            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            
+            # Bind to any channel
+            self.server_socket.bind((self.get_bt_address(), 1))
+            self.server_socket.listen(1)
+            
+            # Start listening thread
+            self.running = True
+            self.rfcomm_thread = threading.Thread(target=self._rfcomm_listener)
+            self.rfcomm_thread.daemon = True
+            self.rfcomm_thread.start()
+            
+            print("✅ RFCOMM server started on channel 1")
+            return True
+            
+        except Exception as e:
+            print(f"⚠️ RFCOMM server error: {e}")
+            return False
+    
+    def _rfcomm_listener(self):
+        """Listen for incoming RFCOMM connections"""
+        while self.running:
+            try:
+                self.server_socket.settimeout(1.0)
+                client, address = self.server_socket.accept()
+                
+                # Receive data
+                data = client.recv(1024)
+                if data:
+                    try:
+                        command = json.loads(data.decode('utf-8'))
+                        self.command_queue.append(command)
+                        print(f"\n📱 Received: {command}")
+                    except:
+                        pass
+                
+                client.close()
+            except socket.timeout:
+                continue
+            except Exception as e:
+                pass
     
     def get_command(self):
         """Get next received command"""
@@ -213,118 +358,23 @@ class BLEReceiver:
             return self.command_queue.popleft()
         return None
     
-    def stop(self):
-        """Stop BLE reception"""
-        self.running = False
-        if hasattr(self, 'receive_proc') and self.receive_proc:
-            self.receive_proc.terminate()
-        subprocess.run(['sudo', 'killall', 'bluetoothctl'], stderr=subprocess.DEVNULL)
-        print("🔵 BLE stopped")
-
-class BLEBroadcaster:
-    """Handles BLE broadcasting of sensor data and rover specs"""
-    
-    def __init__(self):
-        self.running = False
-        self.broadcast_thread = None
-        self.current_data = {}
-        
-    def start_broadcasting(self):
-        """Start broadcasting sensor data"""
+    def start(self):
+        """Start BLE services"""
         self.running = True
-        self.broadcast_thread = threading.Thread(target=self._broadcast_loop)
-        self.broadcast_thread.daemon = True
-        self.broadcast_thread.start()
-        print("📡 BLE broadcasting started (5Hz)")
-        
-    def _broadcast_loop(self):
-        """Background thread for broadcasting BLE packets"""
-        while self.running:
-            if self.current_data:
-                # Prepare broadcast packet
-                packet = self._encode_packet(self.current_data)
-                if packet:
-                    self._send_ble_packet(packet)
-            time.sleep(BLE_ADVERTISING_INTERVAL_MS / 1000.0)
-    
-    def _encode_packet(self, data):
-        """Encode sensor data into BLE packet format"""
-        try:
-            # Convert to JSON string
-            json_str = json.dumps(data)
-            # Encode to bytes
-            return json_str.encode('utf-8')
-        except Exception as e:
-            print(f"⚠️ Packet encoding error: {e}")
-            return None
-    
-    def _send_ble_packet(self, packet):
-        """Send BLE packet via bluetoothctl"""
-        try:
-            # Convert packet to hex for advertising data
-            hex_str = ' '.join(f'{b:02x}' for b in packet[:31])  # Max 31 bytes for advertising data
-            
-            # Update advertising data
-            proc = subprocess.Popen(['bluetoothctl'], 
-                                   stdin=subprocess.PIPE,
-                                   stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL,
-                                   text=True)
-            
-            # Set advertising data (manufacturer specific data)
-            cmd = f'advertise data {len(packet):02x} ff {hex_str}'
-            proc.stdin.write(cmd + '\n')
-            proc.stdin.write('advertise on\n')
-            proc.stdin.flush()
-            proc.terminate()
-            
-        except Exception as e:
-            pass  # Silent fail to avoid console spam
-    
-    def update_data(self, sensor_data):
-        """Update the current sensor data to broadcast"""
-        self.current_data = sensor_data
-    
-    def broadcast_rover_specs(self):
-        """Broadcast rover specifications once"""
-        specs = {
-            'type': 'rover_specs',
-            'name': DEVICE_NAME,
-            'sensors': {
-                'ultrasonic': {'range_cm': [2, 400], 'fov_deg': 15},
-                'ir_sensors': {
-                    'count': 4,
-                    'angles_deg': [135, 45, 225, 315],
-                    'type': 'obstacle_detection'
-                },
-                'compass': {'type': 'GY-271', 'accuracy_deg': 1}
-            },
-            'actuators': {
-                'motors': {'type': 'L298N', 'max_speed_percent': 100},
-                'leds': 3,
-                'buzzer': True
-            },
-            'capabilities': {
-                'modes': ['auto', 'manual'],
-                'max_speed_cm_s': 30,
-                'turn_radius_cm': 0,  # Zero-turn capable
-                'obstacle_threshold_cm': OBSTACLE_THRESHOLD,
-                'critical_distance_cm': CRITICAL_DISTANCE
-            },
-            'firmware_version': '2.0',
-            'timestamp': time.time()
-        }
-        
-        # Broadcast specs packet
-        packet = self._encode_packet(specs)
-        if packet:
-            self._send_ble_packet(packet)
-            print("📡 Rover specifications broadcasted")
+        return self.setup_rfcomm_server()
     
     def stop(self):
-        """Stop broadcasting"""
+        """Stop BLE services"""
         self.running = False
-        print("📡 BLE broadcasting stopped")
+        self.stop_ble_advertising()
+        
+        if hasattr(self, 'server_socket'):
+            try:
+                self.server_socket.close()
+            except:
+                pass
+        
+        print("🔵 BLE services stopped")
 
 class Compass:
     """GY-271 Compass sensor interface"""
@@ -334,62 +384,39 @@ class Compass:
         self.calibrated = False
     
     def initialize(self):
-        """Initialize compass and set reference"""
         try:
             import smbus2
             self.bus = smbus2.SMBus(1)
-            
-            # Initialize HMC5883L
-            self.bus.write_byte_data(0x1e, 0x02, 0x00)  # Continuous mode
-            
+            self.bus.write_byte_data(0x1e, 0x02, 0x00)
             time.sleep(0.1)
-            
-            # Get initial reading for reference
             self.reference_angle = self.get_angle()
             self.calibrated = True
-            print(f"🧭 Compass initialized. Reference angle: {self.reference_angle:.1f}°")
+            print(f"🧭 Compass initialized. Reference: {self.reference_angle:.1f}°")
             return True
-        except ImportError:
-            print("⚠️  smbus2 not installed. Compass disabled.")
-            return False
-        except Exception as e:
-            print(f"⚠️  Compass error: {e}")
+        except:
+            print("⚠️ Compass not available")
             return False
     
     def get_angle(self):
-        """Get current angle in degrees (0-360)"""
         if not self.calibrated:
             return 0
-        
         try:
-            # Read from HMC5883L
-            data = self.bus.read_i2c_block_data(0x1e, 0x03, 6)
-            
-            # Convert to signed integers
+            import smbus2
+            bus = smbus2.SMBus(1)
+            data = bus.read_i2c_block_data(0x1e, 0x03, 6)
             x = (data[0] << 8) | data[1]
             if x > 32767:
                 x -= 65536
             z = (data[4] << 8) | data[5]
             if z > 32767:
                 z -= 65536
-            
-            # Calculate angle
             angle = math.atan2(z, x) * 180 / math.pi
             if angle < 0:
                 angle += 360
-            
             self.current_angle = angle
             return angle
         except:
             return self.current_angle
-    
-    def get_relative_angle(self):
-        """Get angle relative to reference (0 = reference direction)"""
-        raw_angle = self.get_angle()
-        relative = raw_angle - self.reference_angle
-        if relative < 0:
-            relative += 360
-        return relative
 
 class MotorController:
     """L298N Motor controller"""
@@ -401,19 +428,16 @@ class MotorController:
         self.pwm_b = None
     
     def set_speed(self, speed):
-        """Dynamically change motor speed (0-100)"""
         self.current_speed = max(0, min(100, speed))
         if self.running and self.pwm_a and self.pwm_b:
             self.pwm_a.ChangeDutyCycle(self.current_speed)
             self.pwm_b.ChangeDutyCycle(self.current_speed)
-        print(f"  ⚡ Speed set to {self.current_speed}%")
+        print(f"  ⚡ Speed: {self.current_speed}%")
     
     def get_speed(self):
-        """Get current motor speed"""
         return self.current_speed
     
     def setup(self):
-        """Setup motor pins and PWM"""
         GPIO.setup(PINS['L298N_IN1'], GPIO.OUT)
         GPIO.setup(PINS['L298N_IN2'], GPIO.OUT)
         GPIO.setup(PINS['L298N_IN3'], GPIO.OUT)
@@ -427,10 +451,9 @@ class MotorController:
         self.pwm_b.start(0)
         
         self.running = True
-        print(f"✅ Motor controller initialized (Base speed: {self.base_speed}%)")
+        print(f"✅ Motors initialized (speed: {self.base_speed}%)")
     
     def stop(self):
-        """Stop all motors"""
         GPIO.output(PINS['L298N_IN1'], GPIO.LOW)
         GPIO.output(PINS['L298N_IN2'], GPIO.LOW)
         GPIO.output(PINS['L298N_IN3'], GPIO.LOW)
@@ -440,7 +463,6 @@ class MotorController:
             self.pwm_b.ChangeDutyCycle(0)
     
     def forward(self, speed=None):
-        """Move forward"""
         use_speed = speed if speed is not None else self.current_speed
         use_speed = max(0, min(100, use_speed))
         if self.pwm_a and self.pwm_b:
@@ -452,7 +474,6 @@ class MotorController:
         GPIO.output(PINS['L298N_IN4'], GPIO.LOW)
     
     def backward(self, speed=None):
-        """Move backward"""
         use_speed = speed if speed is not None else SPEED_PRESETS['BACKUP']
         use_speed = max(0, min(100, use_speed))
         if self.pwm_a and self.pwm_b:
@@ -464,7 +485,6 @@ class MotorController:
         GPIO.output(PINS['L298N_IN4'], GPIO.HIGH)
     
     def turn_left(self, speed=None):
-        """Turn left (counter-rotate)"""
         use_speed = speed if speed is not None else SPEED_PRESETS['TURN']
         use_speed = max(0, min(100, use_speed))
         if self.pwm_a and self.pwm_b:
@@ -476,7 +496,6 @@ class MotorController:
         GPIO.output(PINS['L298N_IN4'], GPIO.LOW)
     
     def turn_right(self, speed=None):
-        """Turn right (counter-rotate)"""
         use_speed = speed if speed is not None else SPEED_PRESETS['TURN']
         use_speed = max(0, min(100, use_speed))
         if self.pwm_a and self.pwm_b:
@@ -488,7 +507,6 @@ class MotorController:
         GPIO.output(PINS['L298N_IN4'], GPIO.HIGH)
     
     def cleanup(self):
-        """Cleanup motor controller"""
         if self.running:
             self.stop()
             if self.pwm_a:
@@ -503,12 +521,10 @@ class ObstacleDetector:
         self.last_distance = 999
     
     def setup(self):
-        """Setup ultrasonic pins"""
         GPIO.setup(PINS['ULTRASONIC_TRIG'], GPIO.OUT)
         GPIO.setup(PINS['ULTRASONIC_ECHO'], GPIO.IN)
         GPIO.output(PINS['ULTRASONIC_TRIG'], GPIO.LOW)
         
-        # Setup IR sensors (4x at 45 deg angles)
         ir_pins = [PINS['IR_TOP_LEFT'], PINS['IR_TOP_RIGHT'], 
                    PINS['IR_BOTTOM_LEFT'], PINS['IR_BOTTOM_RIGHT']]
         for pin in ir_pins:
@@ -517,19 +533,16 @@ class ObstacleDetector:
         print("✅ Obstacle detector initialized")
     
     def get_ultrasonic_distance(self):
-        """Get distance from ultrasonic sensor"""
         trig = PINS['ULTRASONIC_TRIG']
         echo = PINS['ULTRASONIC_ECHO']
         
         try:
-            # Send trigger pulse
             GPIO.output(trig, False)
             time.sleep(0.05)
             GPIO.output(trig, True)
             time.sleep(0.00001)
             GPIO.output(trig, False)
             
-            # Wait for echo
             timeout = time.time() + 0.1
             while GPIO.input(echo) == 0 and time.time() < timeout:
                 pulse_start = time.time()
@@ -546,7 +559,6 @@ class ObstacleDetector:
                 self.last_distance = 999
                 return 999
             
-            # Calculate distance
             pulse_duration = pulse_end - pulse_start
             distance = pulse_duration * 17150
             
@@ -557,34 +569,27 @@ class ObstacleDetector:
             return 999
     
     def get_ir_readings(self):
-        """Get all IR sensor readings"""
         readings = {
             'top_left': GPIO.input(PINS['IR_TOP_LEFT']),
             'top_right': GPIO.input(PINS['IR_TOP_RIGHT']),
             'bottom_left': GPIO.input(PINS['IR_BOTTOM_LEFT']),
             'bottom_right': GPIO.input(PINS['IR_BOTTOM_RIGHT'])
         }
-        # IR sensors return 0 when object detected
         return {k: (v == 0) for k, v in readings.items()}
     
     def analyze_obstacles(self):
-        """Analyze obstacle situation and return best action"""
         front_distance = self.get_ultrasonic_distance()
         ir_readings = self.get_ir_readings()
         
-        # Store history
         self.obstacle_history.append({
             'front': front_distance,
             'ir': ir_readings
         })
         
-        # Critical obstacle in front
         if front_distance < CRITICAL_DISTANCE:
             return 'STOP_AND_BACK'
         
-        # Obstacle in front
         if front_distance < OBSTACLE_THRESHOLD:
-            # Check IR sensors for escape path
             if not ir_readings['top_left'] and not ir_readings['bottom_left']:
                 return 'TURN_LEFT'
             elif not ir_readings['top_right'] and not ir_readings['bottom_right']:
@@ -596,25 +601,20 @@ class ObstacleDetector:
             else:
                 return 'TURN_AROUND'
         
-        # No immediate obstacle
         return 'FORWARD'
     
     def get_recommended_speed(self, front_distance):
-        """Get recommended speed based on obstacle distance"""
         if front_distance < CRITICAL_DISTANCE:
-            return 0  # Stop
+            return 0
         elif front_distance < OBSTACLE_THRESHOLD:
-            # Slow down as obstacle gets closer
             ratio = (front_distance - CRITICAL_DISTANCE) / (OBSTACLE_THRESHOLD - CRITICAL_DISTANCE)
             speed = SPEED_PRESETS['MIN'] + (SPEED_PRESETS['SLOW'] - SPEED_PRESETS['MIN']) * ratio
             return int(speed)
         elif front_distance < SAFE_DISTANCE:
-            # Slightly reduced speed
             ratio = (front_distance - OBSTACLE_THRESHOLD) / (SAFE_DISTANCE - OBSTACLE_THRESHOLD)
             speed = SPEED_PRESETS['SLOW'] + (ROVER_SPEED - SPEED_PRESETS['SLOW']) * ratio
             return int(speed)
         else:
-            # Full speed
             return ROVER_SPEED
 
 class NavigationSystem:
@@ -623,23 +623,16 @@ class NavigationSystem:
         self.compass = Compass()
         self.motors = MotorController(ROVER_SPEED)
         self.detector = ObstacleDetector()
-        self.ble_broadcaster = BLEBroadcaster()
-        self.ble_receiver = BLEReceiver()
+        self.ble = BLEManager()
         self.running = False
-        self.navigation_thread = None
         self.data_publish_thread = None
         
         # Control modes - AUTO is default
-        self.auto_mode = True  # Default to AUTO control
-        self.manual_command = None
+        self.auto_mode = True
         
         # LED pins
         self.led_pins = [PINS['LED1'], PINS['LED2'], PINS['LED3']]
-        
-        # Buzzer pin
         self.buzzer_pin = PINS['BUZZER']
-        
-        # Speed control
         self.current_speed = ROVER_SPEED
         
         # Sensor data for broadcasting
@@ -649,14 +642,12 @@ class NavigationSystem:
             'ir_sensors': {},
             'compass_angle': 0,
             'motor_speed': 0,
-            'motor_speed_percent': 0,
             'auto_mode': True,
             'obstacle_action': 'FORWARD',
             'timestamp': 0
         }
     
     def setup_indicators(self):
-        """Setup LED and buzzer pins"""
         for pin in self.led_pins:
             GPIO.setup(pin, GPIO.OUT)
             GPIO.output(pin, GPIO.LOW)
@@ -665,28 +656,23 @@ class NavigationSystem:
         GPIO.output(self.buzzer_pin, GPIO.LOW)
     
     def led_on(self, led_num):
-        """Turn on specific LED (1-3)"""
         if 1 <= led_num <= 3:
             GPIO.output(self.led_pins[led_num - 1], GPIO.HIGH)
     
     def led_off(self, led_num):
-        """Turn off specific LED"""
         if 1 <= led_num <= 3:
             GPIO.output(self.led_pins[led_num - 1], GPIO.LOW)
     
     def led_all_off(self):
-        """Turn off all LEDs"""
         for pin in self.led_pins:
             GPIO.output(pin, GPIO.LOW)
     
     def beep(self, duration=0.1):
-        """Make a beep sound"""
         GPIO.output(self.buzzer_pin, GPIO.HIGH)
         time.sleep(duration)
         GPIO.output(self.buzzer_pin, GPIO.LOW)
     
     def alert_pattern(self):
-        """Alert pattern for obstacles"""
         for _ in range(2):
             self.beep(0.05)
             time.sleep(0.05)
@@ -698,77 +684,71 @@ class NavigationSystem:
             self.sensor_data['front_distance'] = self.detector.last_distance
             self.sensor_data['ir_sensors'] = self.detector.get_ir_readings()
             self.sensor_data['compass_angle'] = self.compass.get_angle()
-            self.sensor_data['motor_speed_percent'] = self.current_speed
+            self.sensor_data['motor_speed'] = self.current_speed
             self.sensor_data['auto_mode'] = self.auto_mode
             self.sensor_data['timestamp'] = time.time()
             
-            # Get current action for broadcast
             if self.auto_mode:
                 action = self.detector.analyze_obstacles()
                 self.sensor_data['obstacle_action'] = action
             
             # Broadcast via BLE
-            self.ble_broadcaster.update_data(self.sensor_data)
+            self.ble.broadcast_data(self.sensor_data)
             
-            time.sleep(0.2)  # Broadcast at 5Hz
+            time.sleep(0.2)  # 5Hz broadcast
     
     def process_ble_commands(self):
         """Process incoming BLE commands"""
-        command = self.ble_receiver.get_command()
+        command = self.ble.get_command()
         
         if not command:
             return
         
-        print(f"\n📱 Received BLE command: {command}")
+        print(f"\n📱 BLE Command: {command}")
         
-        # Handle different command types
         if command.get('type') == 'mode':
-            # Change control mode
             mode = command.get('mode', 'auto')
             if mode == 'auto':
                 self.auto_mode = True
-                print("🤖 Switched to AUTO navigation mode")
+                print("🤖 AUTO mode")
                 self.beep(0.2)
                 self.led_on(3)
                 self.led_off(2)
             else:
                 self.auto_mode = False
-                print("🎮 Switched to MANUAL control mode")
+                print("🎮 MANUAL mode")
                 self.beep(0.1)
                 self.led_off(3)
                 self.led_on(2)
                 
         elif command.get('type') == 'speed':
-            # Change rover speed
             global ROVER_SPEED
             new_speed = command.get('speed', ROVER_SPEED)
             ROVER_SPEED = max(0, min(100, new_speed))
             self.current_speed = ROVER_SPEED
             self.motors.set_speed(self.current_speed)
-            print(f"⚡ Speed set to {ROVER_SPEED}%")
+            print(f"⚡ Speed: {ROVER_SPEED}%")
             
         elif command.get('type') == 'control' and not self.auto_mode:
-            # Manual control commands (only in manual mode)
             action = command.get('action', 'stop')
             
             if action == 'forward':
                 self.motors.forward(self.current_speed)
-                print("  ⬆️  Moving forward")
+                print("  ⬆️ Forward")
             elif action == 'backward':
                 self.motors.backward()
-                print("  ⬇️  Moving backward")
+                print("  ⬇️ Backward")
             elif action == 'left':
                 self.motors.turn_left()
-                print("  ⬅️  Turning left")
+                print("  ⬅️ Left")
             elif action == 'right':
                 self.motors.turn_right()
-                print("  ➡️  Turning right")
+                print("  ➡️ Right")
             elif action == 'stop':
                 self.motors.stop()
-                print("  🛑 Stopped")
+                print("  🛑 Stop")
                 
         elif command.get('type') == 'command':
-            # Direct command
             cmd = command.get('command', '').lower()
             if cmd == 'stop':
                 self.motors.stop()
@@ -777,80 +757,60 @@ class NavigationSystem:
     
     def initialize(self):
         """Initialize all systems"""
-        print("\n🚀 Initializing Navigation System...")
-        print(f"⚙️  Global speed setting: {ROVER_SPEED}%")
-        print(f"   - Cruise speed: {SPEED_PRESETS['CRUISE']}%")
-        print(f"   - Slow speed: {SPEED_PRESETS['SLOW']}%")
-        print(f"   - Turn speed: {SPEED_PRESETS['TURN']}%")
-        print(f"   - Backup speed: {SPEED_PRESETS['BACKUP']}%")
-        print(f"\n🤖 Default mode: AUTO NAVIGATION")
-        print("📡 BLE broadcasting enabled - No pairing required")
+        print("\n" + "="*60)
+        print("   INTELLIGENT NAVIGATION SYSTEM v2.0")
+        print("   BLE Broadcasting - No Pairing Required")
+        print("="*60)
+        print(f"\n⚙️ Speed: {ROVER_SPEED}%")
+        print("🤖 Default: AUTO NAVIGATION")
         
-        # Setup GPIO mode
+        # Setup GPIO
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
-        
-        # Setup indicators
         self.setup_indicators()
-        
-        # Turn on LED 1 - System ready
         self.led_on(1)
-        print("🔆 LED 1 ON - System ready")
         
-        # Setup BLE broadcasting
-        if self.ble_broadcaster.start_broadcasting():
-            print("📡 BLE broadcaster ready")
-            # Broadcast rover specs once
-            self.ble_broadcaster.broadcast_rover_specs()
+        # Install and setup BLE
+        self.ble.install_bluez_tools()
         
-        # Setup BLE receiving
-        if self.ble_receiver.setup_ble_scan():
-            self.ble_receiver.start_receiving()
-            print("📡 BLE receiver ready - Listening for commands")
+        if not self.ble.setup_bluetooth_interface():
+            print("⚠️ Running without BLE")
+        else:
+            if self.ble.start_ble_advertising():
+                print("✅ BLE advertising active")
+            if self.ble.start():
+                print("✅ BLE command receiver active")
         
-        # Initialize components
+        # Initialize hardware
         self.motors.setup()
         self.detector.setup()
+        self.compass.initialize()
         
-        # Initialize compass
-        if not self.compass.initialize():
-            print("⚠️  Compass not available - using dead reckoning")
-        
-        # Beep to indicate ready
+        # Startup beep
         self.beep(0.3)
         time.sleep(0.1)
         self.beep(0.3)
         
-        print("\n✅ Navigation System Ready!")
-        print("📡 Obstacle detection active")
-        print(f"🤖 Control mode: AUTO (default)")
-        print("\n📱 BLE Info:")
-        print(f"   - Device Name: {DEVICE_NAME}")
-        print(f"   - Service UUID: {BLE_SERVICE_UUID}")
-        print(f"   - No pairing required")
-        print(f"   - Broadcast rate: 5Hz")
+        print("\n✅ System Ready!")
+        print(f"📡 BLE Device: {DEVICE_NAME}")
+        print("   Scan with any BLE scanner to see data")
+        print("   No pairing required!\n")
         
         return True
     
     def manual_control_loop(self):
-        """Manual control loop - processes BLE commands only"""
         while self.running and not self.auto_mode:
             self.process_ble_commands()
             time.sleep(0.05)
     
     def auto_navigation_loop(self):
-        """Automatic navigation loop with obstacle avoidance"""
         while self.running and self.auto_mode:
-            # Check for mode change command
             self.process_ble_commands()
             
-            # Analyze obstacles
             action = self.detector.analyze_obstacles()
-            
-            # Get front distance for display
             front_distance = self.detector.get_ultrasonic_distance()
             
-            # Update sensor data with current action
+            # Update sensor data
             self.sensor_data['obstacle_action'] = action
             
             # Display status
@@ -868,27 +828,21 @@ class NavigationSystem:
             
             print(f"\r📍 {status} | Action: {action}", end="", flush=True)
             
-            # Execute action
             self.execute_action(action, front_distance)
-            
-            # Small delay for stability
             time.sleep(0.05)
     
     def execute_action(self, action, front_distance):
-        """Execute navigation action based on obstacle analysis"""
         if action == 'FORWARD':
-            # Dynamic speed based on obstacle distance
             recommended_speed = self.detector.get_recommended_speed(front_distance)
             if recommended_speed != self.current_speed:
                 self.current_speed = recommended_speed
                 self.motors.set_speed(self.current_speed)
-            
             self.motors.forward(self.current_speed)
             self.led_off(2)
             self.led_off(3)
             
         elif action == 'TURN_LEFT':
-            print("  ↪️  Turning left to avoid obstacle")
+            print("  ↪️ Turning left")
             self.led_on(2)
             self.led_off(3)
             self.motors.stop()
@@ -897,12 +851,11 @@ class NavigationSystem:
             time.sleep(TURN_DURATION)
             self.motors.stop()
             self.alert_pattern()
-            # Reset speed after turn
             self.current_speed = ROVER_SPEED
             self.motors.set_speed(self.current_speed)
             
         elif action == 'TURN_RIGHT':
-            print("  ↩️  Turning right to avoid obstacle")
+            print("  ↩️ Turning right")
             self.led_off(2)
             self.led_on(3)
             self.motors.stop()
@@ -911,12 +864,11 @@ class NavigationSystem:
             time.sleep(TURN_DURATION)
             self.motors.stop()
             self.alert_pattern()
-            # Reset speed after turn
             self.current_speed = ROVER_SPEED
             self.motors.set_speed(self.current_speed)
             
         elif action == 'TURN_AROUND':
-            print("  🔄 Turning around - path blocked")
+            print("  🔄 Turning around")
             self.led_on(2)
             self.led_on(3)
             self.motors.stop()
@@ -927,12 +879,11 @@ class NavigationSystem:
             for _ in range(3):
                 self.beep(0.1)
                 time.sleep(0.1)
-            # Reset speed
             self.current_speed = ROVER_SPEED
             self.motors.set_speed(self.current_speed)
             
         elif action == 'STOP_AND_BACK':
-            print("  ⚠️  CRITICAL! Backing up...")
+            print("  ⚠️ CRITICAL! Backing up...")
             for _ in range(3):
                 self.beep(0.2)
                 time.sleep(0.1)
@@ -942,7 +893,6 @@ class NavigationSystem:
             time.sleep(1.0)
             self.motors.stop()
             time.sleep(0.1)
-            # Random turn after backing up
             import random
             if random.choice([True, False]):
                 self.motors.turn_left()
@@ -950,28 +900,23 @@ class NavigationSystem:
                 self.motors.turn_right()
             time.sleep(TURN_DURATION)
             self.motors.stop()
-            # Reset speed
             self.current_speed = ROVER_SPEED
             self.motors.set_speed(self.current_speed)
     
     def start(self):
         """Start navigation system"""
-        # Start BLE broadcast thread
-        self.ble_broadcaster.start_broadcasting()
-        
-        # Start sensor broadcast thread
+        # Start broadcast thread
         self.data_publish_thread = threading.Thread(target=self.broadcast_sensor_data)
         self.data_publish_thread.daemon = True
         self.data_publish_thread.start()
         
-        print("\n🎯 System Active!")
-        print("🤖 Default mode: AUTO NAVIGATION")
-        print("📱 BLE commands accepted (no pairing required)")
-        print("   - Mode control: {'type': 'mode', 'mode': 'auto' or 'manual'}")
-        print("   - Speed control: {'type': 'speed', 'speed': 0-100}")
-        print("   - Manual control: {'type': 'control', 'action': 'forward/backward/left/right/stop'}")
-        print("   - Simple commands: {'type': 'command', 'command': 'stop/beep'}")
-        print("\n📡 Sensor data broadcasted via BLE at 5Hz")
+        print("🎯 System Active!")
+        print("🤖 AUTO NAVIGATION mode")
+        print("📱 Send commands via BLE (no pairing)")
+        print("   - Mode: {'type':'mode','mode':'auto/manual'}")
+        print("   - Speed: {'type':'speed','speed':0-100}")
+        print("   - Control: {'type':'control','action':'forward/backward/left/right/stop'}")
+        print("\n📡 Sensor data broadcasted via BLE")
         print("Press Ctrl+C to stop\n")
         
         try:
@@ -982,42 +927,19 @@ class NavigationSystem:
                     self.manual_control_loop()
                 time.sleep(0.01)
         except KeyboardInterrupt:
-            print("\n\n🛑 Stopping navigation...")
+            print("\n\n🛑 Stopping...")
             self.stop()
     
     def stop(self):
-        """Stop navigation system"""
         self.running = False
-        
         self.motors.stop()
         self.led_all_off()
-        
-        # Cleanup
         self.motors.cleanup()
-        self.ble_broadcaster.stop()
-        self.ble_receiver.stop()
+        self.ble.stop()
         GPIO.cleanup()
-        
-        print("✅ Navigation system stopped")
-        print("👋 Goodbye!")
+        print("✅ System stopped")
 
 def main():
-    """Main entry point"""
-    print("="*60)
-    print("   INTELLIGENT NAVIGATION SYSTEM v2.0")
-    print("   - BLE Broadcasting (No Pairing Required)")
-    print("   - 4x IR Sensors at 45° angles")
-    print("   - Ultrasonic Sensor (forward)")
-    print("   - AUTO Navigation Mode (Default)")
-    print("   - Manual Mode via BLE Commands")
-    print("="*60)
-    print(f"\n⚙️  Current global speed setting: {ROVER_SPEED}%")
-    print("   To change speed, edit ROVER_SPEED variable or send BLE command")
-    print(f"\n📡 BLE Device Name: {DEVICE_NAME}")
-    print(f"   Service UUID: {BLE_SERVICE_UUID}")
-    print("   No pairing required - just listen for broadcasts")
-    print()
-    
     nav_system = NavigationSystem()
     
     try:
@@ -1025,7 +947,7 @@ def main():
             nav_system.running = True
             nav_system.start()
     except Exception as e:
-        print(f"\n❌ System error: {e}")
+        print(f"\n❌ Error: {e}")
         nav_system.stop()
 
 if __name__ == "__main__":
