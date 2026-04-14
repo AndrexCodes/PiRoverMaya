@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Intelligent Navigation System for Raspberry Pi with Bluetooth Control
+Intelligent Navigation System for Raspberry Pi
 Run with: sudo python3 main.py
 """
 
@@ -8,10 +8,7 @@ import RPi.GPIO as GPIO
 import time
 import math
 import threading
-import json
 from collections import deque
-import bluetooth
-import struct
 
 # ========== PIN CONFIGURATION ==========
 PINS = {
@@ -49,14 +46,10 @@ PINS = {
     'BUZZER': 27
 }
 
-# ========== BLUETOOTH CONFIGURATION ==========
-BT_SERVICE_NAME = "RoverNavSystem"
-BT_UUID = "00001101-0000-1000-8000-00805F9B34FB"  # Standard Serial Port Profile UUID
-
 # ========== GLOBAL SPEED CONFIGURATION ==========
 # ⚙️ ADJUST THIS VALUE TO CHANGE ROVER SPEED (0-100)
 # 0 = stopped, 30 = slow, 60 = medium, 100 = maximum
-ROVER_SPEED = 40  # Default: 40% speed
+ROVER_SPEED = 40  # Default: 60% speed
 
 # Speed presets for different conditions
 SPEED_PRESETS = {
@@ -74,7 +67,11 @@ SAFE_DISTANCE = 40       # cm
 CRITICAL_DISTANCE = 15   # cm (emergency stop)
 TURN_DURATION = 0.8      # seconds
 
+# Speed will be dynamically adjusted based on obstacles
+# but ROVER_SPEED sets the base maximum speed
+
 # Direction mapping for IR sensors (angles relative to robot)
+# Sensors positioned at 45 deg angles
 SENSOR_ANGLES = {
     'IR_TOP_LEFT': 135,      # 135 deg (top-left quadrant)
     'IR_TOP_RIGHT': 45,      # 45 deg (top-right quadrant)
@@ -153,13 +150,11 @@ class MotorController:
         self.running = False
         self.base_speed = base_speed
         self.current_speed = base_speed
-        self.pwm_a = None
-        self.pwm_b = None
     
     def set_speed(self, speed):
         """Dynamically change motor speed (0-100)"""
         self.current_speed = max(0, min(100, speed))
-        if self.running and self.pwm_a and self.pwm_b:
+        if self.running:
             self.pwm_a.ChangeDutyCycle(self.current_speed)
             self.pwm_b.ChangeDutyCycle(self.current_speed)
         print(f"  ⚡ Speed set to {self.current_speed}%")
@@ -191,19 +186,15 @@ class MotorController:
         GPIO.output(PINS['L298N_IN2'], GPIO.LOW)
         GPIO.output(PINS['L298N_IN3'], GPIO.LOW)
         GPIO.output(PINS['L298N_IN4'], GPIO.LOW)
-        if self.pwm_a:
-            self.pwm_a.ChangeDutyCycle(0)
-        if self.pwm_b:
-            self.pwm_b.ChangeDutyCycle(0)
+        self.pwm_a.ChangeDutyCycle(0)
+        self.pwm_b.ChangeDutyCycle(0)
     
     def forward(self, speed=None):
         """Move forward"""
         use_speed = speed if speed is not None else self.current_speed
         use_speed = max(0, min(100, use_speed))
-        if self.pwm_a:
-            self.pwm_a.ChangeDutyCycle(use_speed)
-        if self.pwm_b:
-            self.pwm_b.ChangeDutyCycle(use_speed)
+        self.pwm_a.ChangeDutyCycle(use_speed)
+        self.pwm_b.ChangeDutyCycle(use_speed)
         GPIO.output(PINS['L298N_IN1'], GPIO.HIGH)
         GPIO.output(PINS['L298N_IN2'], GPIO.LOW)
         GPIO.output(PINS['L298N_IN3'], GPIO.HIGH)
@@ -213,10 +204,8 @@ class MotorController:
         """Move backward"""
         use_speed = speed if speed is not None else SPEED_PRESETS['BACKUP']
         use_speed = max(0, min(100, use_speed))
-        if self.pwm_a:
-            self.pwm_a.ChangeDutyCycle(use_speed)
-        if self.pwm_b:
-            self.pwm_b.ChangeDutyCycle(use_speed)
+        self.pwm_a.ChangeDutyCycle(use_speed)
+        self.pwm_b.ChangeDutyCycle(use_speed)
         GPIO.output(PINS['L298N_IN1'], GPIO.LOW)
         GPIO.output(PINS['L298N_IN2'], GPIO.HIGH)
         GPIO.output(PINS['L298N_IN3'], GPIO.LOW)
@@ -226,10 +215,8 @@ class MotorController:
         """Turn left (counter-rotate)"""
         use_speed = speed if speed is not None else SPEED_PRESETS['TURN']
         use_speed = max(0, min(100, use_speed))
-        if self.pwm_a:
-            self.pwm_a.ChangeDutyCycle(use_speed)
-        if self.pwm_b:
-            self.pwm_b.ChangeDutyCycle(use_speed)
+        self.pwm_a.ChangeDutyCycle(use_speed)
+        self.pwm_b.ChangeDutyCycle(use_speed)
         GPIO.output(PINS['L298N_IN1'], GPIO.LOW)
         GPIO.output(PINS['L298N_IN2'], GPIO.HIGH)
         GPIO.output(PINS['L298N_IN3'], GPIO.HIGH)
@@ -239,10 +226,8 @@ class MotorController:
         """Turn right (counter-rotate)"""
         use_speed = speed if speed is not None else SPEED_PRESETS['TURN']
         use_speed = max(0, min(100, use_speed))
-        if self.pwm_a:
-            self.pwm_a.ChangeDutyCycle(use_speed)
-        if self.pwm_b:
-            self.pwm_b.ChangeDutyCycle(use_speed)
+        self.pwm_a.ChangeDutyCycle(use_speed)
+        self.pwm_b.ChangeDutyCycle(use_speed)
         GPIO.output(PINS['L298N_IN1'], GPIO.HIGH)
         GPIO.output(PINS['L298N_IN2'], GPIO.LOW)
         GPIO.output(PINS['L298N_IN3'], GPIO.LOW)
@@ -252,10 +237,8 @@ class MotorController:
         """Cleanup motor controller"""
         if self.running:
             self.stop()
-            if self.pwm_a:
-                self.pwm_a.stop()
-            if self.pwm_b:
-                self.pwm_b.stop()
+            self.pwm_a.stop()
+            self.pwm_b.stop()
 
 class ObstacleDetector:
     """Obstacle detection using ultrasonic and IR sensors"""
@@ -361,6 +344,7 @@ class ObstacleDetector:
             return 0  # Stop
         elif front_distance < OBSTACLE_THRESHOLD:
             # Slow down as obstacle gets closer
+            # Linear interpolation between SLOW and MIN speeds
             ratio = (front_distance - CRITICAL_DISTANCE) / (OBSTACLE_THRESHOLD - CRITICAL_DISTANCE)
             speed = SPEED_PRESETS['MIN'] + (SPEED_PRESETS['SLOW'] - SPEED_PRESETS['MIN']) * ratio
             return int(speed)
@@ -373,100 +357,14 @@ class ObstacleDetector:
             # Full speed
             return ROVER_SPEED
 
-class BluetoothServer:
-    """Bluetooth communication server"""
-    def __init__(self):
-        self.server_sock = None
-        self.client_sock = None
-        self.client_address = None
-        self.connected = False
-        self.running = False
-        self.receive_thread = None
-        
-    def setup(self):
-        """Setup Bluetooth server"""
-        try:
-            # Create server socket
-            self.server_sock = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
-            self.server_sock.bind(("", bluetooth.PORT_ANY))
-            self.server_sock.listen(1)
-            
-            port = self.server_sock.getsockname()[1]
-            
-            # Advertise service
-            bluetooth.advertise_service(self.server_sock, BT_SERVICE_NAME,
-                                       service_id=BT_UUID,
-                                       service_classes=[BT_UUID, bluetooth.SERIAL_PORT_CLASS],
-                                       profiles=[bluetooth.SERIAL_PORT_PROFILE])
-            
-            print(f"📡 Bluetooth server setup complete. Waiting for connection on port {port}...")
-            print(f"   Service Name: {BT_SERVICE_NAME}")
-            print("   Pair with your PC and connect using a serial terminal or custom app")
-            return True
-            
-        except Exception as e:
-            print(f"❌ Bluetooth setup failed: {e}")
-            print("   Make sure Bluetooth is enabled: sudo hciconfig hci0 up")
-            return False
-    
-    def accept_connection(self):
-        """Accept incoming connection"""
-        if not self.server_sock:
-            return False
-        
-        print("📱 Waiting for PC to connect...")
-        self.client_sock, self.client_address = self.server_sock.accept()
-        self.connected = True
-        print(f"✅ Connected to {self.client_address}")
-        return True
-    
-    def send_data(self, data):
-        """Send data to connected PC"""
-        if self.connected and self.client_sock:
-            try:
-                json_data = json.dumps(data)
-                self.client_sock.send((json_data + "\n").encode('utf-8'))
-                return True
-            except Exception as e:
-                print(f"⚠️  Send error: {e}")
-                self.connected = False
-                return False
-        return False
-    
-    def receive_data(self):
-        """Receive data from PC"""
-        if self.connected and self.client_sock:
-            try:
-                data = self.client_sock.recv(1024).decode('utf-8').strip()
-                if data:
-                    return json.loads(data)
-            except Exception as e:
-                print(f"⚠️  Receive error: {e}")
-                self.connected = False
-                return None
-        return None
-    
-    def close(self):
-        """Close connections"""
-        self.connected = False
-        if self.client_sock:
-            self.client_sock.close()
-        if self.server_sock:
-            self.server_sock.close()
-        print("🔌 Bluetooth connection closed")
-
 class NavigationSystem:
     """Main navigation system"""
     def __init__(self):
         self.compass = Compass()
         self.motors = MotorController(ROVER_SPEED)
         self.detector = ObstacleDetector()
-        self.bt_server = BluetoothServer()
         self.running = False
         self.navigation_thread = None
-        self.publish_thread = None
-        self.control_mode = "MANUAL"  # MANUAL or AUTO
-        self.manual_command = None
         
         # LED pins
         self.led_pins = [PINS['LED1'], PINS['LED2'], PINS['LED3']]
@@ -476,16 +374,6 @@ class NavigationSystem:
         
         # Speed control
         self.current_speed = ROVER_SPEED
-        
-        # Sensor data
-        self.sensor_data = {
-            'front_distance': 999,
-            'ir_readings': {},
-            'compass_angle': 0,
-            'motor_speed': 0,
-            'control_mode': 'MANUAL',
-            'timestamp': 0
-        }
     
     def setup_indicators(self):
         """Setup LED and buzzer pins"""
@@ -523,135 +411,52 @@ class NavigationSystem:
             self.beep(0.05)
             time.sleep(0.05)
     
-    def update_sensor_data(self):
-        """Update sensor readings"""
-        self.sensor_data['front_distance'] = self.detector.get_ultrasonic_distance()
-        self.sensor_data['ir_readings'] = self.detector.get_ir_readings()
-        self.sensor_data['compass_angle'] = self.compass.get_angle()
-        self.sensor_data['motor_speed'] = self.current_speed
-        self.sensor_data['control_mode'] = self.control_mode
-        self.sensor_data['timestamp'] = time.time()
-    
-    def publish_sensor_data(self):
-        """Publish sensor data via Bluetooth"""
-        self.update_sensor_data()
-        if self.bt_server.connected:
-            self.bt_server.send_data({
-                'type': 'telemetry',
-                'data': self.sensor_data
-            })
-    
-    def process_command(self, command):
-        """Process commands from PC"""
-        cmd_type = command.get('type', '')
+    def initialize(self):
+        """Initialize all systems"""
+        print("\n🚀 Initializing Navigation System...")
+        print(f"⚙️  Global speed setting: {ROVER_SPEED}%")
+        print(f"   - Cruise speed: {SPEED_PRESETS['CRUISE']}%")
+        print(f"   - Slow speed: {SPEED_PRESETS['SLOW']}%")
+        print(f"   - Turn speed: {SPEED_PRESETS['TURN']}%")
+        print(f"   - Backup speed: {SPEED_PRESETS['BACKUP']}%")
         
-        if cmd_type == 'mode':
-            # Change control mode
-            new_mode = command.get('mode', 'MANUAL')
-            if new_mode in ['MANUAL', 'AUTO']:
-                self.control_mode = new_mode
-                print(f"\n🎮 Control mode changed to: {self.control_mode}")
-                if self.control_mode == 'MANUAL':
-                    self.motors.stop()
-                # LED3 indicates AUTO mode
-                if self.control_mode == 'AUTO':
-                    self.led_on(3)
-                else:
-                    self.led_off(3)
-                return True
-                
-        elif cmd_type == 'speed':
-            # Set global speed
-            new_speed = command.get('speed', ROVER_SPEED)
-            global ROVER_SPEED
-            ROVER_SPEED = max(0, min(100, new_speed))
-            self.current_speed = ROVER_SPEED
-            self.motors.set_speed(self.current_speed)
-            print(f"\n⚡ Speed set to: {ROVER_SPEED}%")
-            return True
-            
-        elif cmd_type == 'manual_control' and self.control_mode == 'MANUAL':
-            # Manual control commands
-            action = command.get('action', 'STOP')
-            duration = command.get('duration', 0.5)
-            
-            if action == 'FORWARD':
-                print("  🏃 Manual: Forward")
-                self.motors.forward(self.current_speed)
-            elif action == 'BACKWARD':
-                print("  🔄 Manual: Backward")
-                self.motors.backward()
-            elif action == 'TURN_LEFT':
-                print("  ↪️  Manual: Turn Left")
-                self.motors.turn_left()
-                time.sleep(duration)
-                self.motors.stop()
-            elif action == 'TURN_RIGHT':
-                print("  ↩️  Manual: Turn Right")
-                self.motors.turn_right()
-                time.sleep(duration)
-                self.motors.stop()
-            elif action == 'STOP':
-                print("  🛑 Manual: Stop")
-                self.motors.stop()
-            return True
-            
-        elif cmd_type == 'get_status':
-            # Send current status
-            self.publish_sensor_data()
-            return True
-            
-        return False
+        # Setup GPIO mode
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)
+        
+        # Setup indicators
+        self.setup_indicators()
+        
+        # Turn on LED 1
+        self.led_on(1)
+        print("🔆 LED 1 ON - System starting")
+        
+        # Wait 5 seconds
+        print("⏳ Waiting 5 seconds before starting navigation...")
+        for i in range(5):
+            time.sleep(1)
+            print(f"   {5 - i} seconds remaining...")
+        
+        # Initialize components
+        self.motors.setup()
+        self.detector.setup()
+        
+        # Initialize compass
+        if not self.compass.initialize():
+            print("⚠️  Compass not available - using dead reckoning")
+        
+        # Beep to indicate ready
+        self.beep(0.3)
+        time.sleep(0.1)
+        self.beep(0.3)
+        
+        print("\n✅ Navigation System Ready!")
+        print("📡 Obstacle detection active")
+        print("🧭 Navigation starting...")
+        
+        return True
     
-    def bluetooth_receive_loop(self):
-        """Thread for receiving Bluetooth commands"""
-        while self.running and self.bt_server.connected:
-            command = self.bt_server.receive_data()
-            if command:
-                self.process_command(command)
-            time.sleep(0.05)
-    
-    def bluetooth_publish_loop(self):
-        """Thread for publishing sensor data"""
-        while self.running and self.bt_server.connected:
-            self.publish_sensor_data()
-            time.sleep(0.5)  # Publish every 500ms
-    
-    def navigation_loop(self):
-        """Main navigation loop (only active in AUTO mode)"""
-        while self.running:
-            if self.control_mode == 'AUTO':
-                # Analyze obstacles
-                action = self.detector.analyze_obstacles()
-                
-                # Get front distance for display
-                front_distance = self.detector.get_ultrasonic_distance()
-                
-                # Display status
-                if front_distance < 100:
-                    status = f"Front: {front_distance:.0f}cm"
-                else:
-                    status = "Front: Clear"
-                
-                status += f" | Speed: {self.current_speed}%"
-                
-                ir_readings = self.detector.get_ir_readings()
-                if any(ir_readings.values()):
-                    ir_active = [k for k, v in ir_readings.items() if v]
-                    status += f" | IR: {', '.join(ir_active)}"
-                
-                print(f"\r📍 {status} | Action: {action}", end="", flush=True)
-                
-                # Execute action
-                self.execute_auto_action(action, front_distance)
-                
-                # Small delay for stability
-                time.sleep(0.05)
-            else:
-                # In MANUAL mode, just sleep
-                time.sleep(0.1)
-    
-    def execute_auto_action(self, action, front_distance):
+    def execute_action(self, action, front_distance):
         """Execute navigation action based on obstacle analysis"""
         if action == 'FORWARD':
             # Dynamic speed based on obstacle distance
@@ -662,10 +467,12 @@ class NavigationSystem:
             
             self.motors.forward(self.current_speed)
             self.led_off(2)
+            self.led_off(3)
             
         elif action == 'TURN_LEFT':
             print("  ↪️  Turning left to avoid obstacle")
             self.led_on(2)
+            self.led_off(3)
             self.motors.stop()
             time.sleep(0.1)
             self.motors.turn_left()
@@ -678,7 +485,8 @@ class NavigationSystem:
             
         elif action == 'TURN_RIGHT':
             print("  ↩️  Turning right to avoid obstacle")
-            self.led_on(2)
+            self.led_off(2)
+            self.led_on(3)
             self.motors.stop()
             time.sleep(0.1)
             self.motors.turn_right()
@@ -692,6 +500,7 @@ class NavigationSystem:
         elif action == 'TURN_AROUND':
             print("  🔄 Turning around - path blocked")
             self.led_on(2)
+            self.led_on(3)
             self.motors.stop()
             time.sleep(0.1)
             self.motors.turn_left()
@@ -727,84 +536,38 @@ class NavigationSystem:
             self.current_speed = ROVER_SPEED
             self.motors.set_speed(self.current_speed)
     
-    def initialize(self):
-        """Initialize all systems"""
-        print("\n🚀 Initializing Navigation System...")
-        print(f"⚙️  Global speed setting: {ROVER_SPEED}%")
-        print(f"   - Cruise speed: {SPEED_PRESETS['CRUISE']}%")
-        print(f"   - Slow speed: {SPEED_PRESETS['SLOW']}%")
-        print(f"   - Turn speed: {SPEED_PRESETS['TURN']}%")
-        print(f"   - Backup speed: {SPEED_PRESETS['BACKUP']}%")
-        
-        # Setup GPIO mode
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setwarnings(False)
-        
-        # Setup indicators
-        self.setup_indicators()
-        
-        # Turn on LED 1 - Waiting for Bluetooth connection
-        self.led_on(1)
-        print("🔆 LED 1 ON - Waiting for Bluetooth connection")
-        
-        # Initialize components
-        self.motors.setup()
-        self.detector.setup()
-        
-        # Initialize compass
-        if not self.compass.initialize():
-            print("⚠️  Compass not available - using dead reckoning")
-        
-        # Setup Bluetooth
-        if not self.bt_server.setup():
-            print("⚠️  Bluetooth not available - running in standalone mode")
-        
-        # Wait for Bluetooth connection
-        print("\n📱 Waiting for PC to connect via Bluetooth...")
-        print("   On your PC:")
-        print("   1. Pair with the Raspberry Pi")
-        print("   2. Connect using a Bluetooth terminal or custom application")
-        print("   3. Default control mode is MANUAL")
-        
-        # Wait for connection
-        connected = False
-        wait_time = 0
-        while not connected and self.bt_server.server_sock:
-            connected = self.bt_server.accept_connection()
-            if not connected:
-                wait_time += 1
-                if wait_time % 10 == 0:
-                    print(f"   Still waiting... ({wait_time} seconds)")
-                time.sleep(1)
-        
-        if connected:
-            # Turn on LED 2 - Bluetooth connected
-            self.led_on(2)
-            print("🔆 LED 2 ON - Bluetooth connected")
-            self.beep(0.3)
-            time.sleep(0.1)
-            self.beep(0.3)
-        else:
-            print("⚠️  No Bluetooth connection - running in standalone mode")
-        
-        # Start communication threads
+    def navigation_loop(self):
+        """Main navigation loop"""
         self.running = True
-        if self.bt_server.connected:
-            self.receive_thread = threading.Thread(target=self.bluetooth_receive_loop)
-            self.receive_thread.daemon = True
-            self.receive_thread.start()
+        
+        while self.running:
+            # Analyze obstacles
+            action = self.detector.analyze_obstacles()
             
-            self.publish_thread = threading.Thread(target=self.bluetooth_publish_loop)
-            self.publish_thread.daemon = True
-            self.publish_thread.start()
-        
-        print("\n✅ Navigation System Ready!")
-        print(f"🎮 Control Mode: {self.control_mode}")
-        if self.control_mode == 'MANUAL':
-            print("   Use PC to send manual commands or switch to AUTO mode")
-        print("📡 Telemetry publishing active")
-        
-        return True
+            # Get front distance for display
+            front_distance = self.detector.get_ultrasonic_distance()
+            
+            # Display status
+            if front_distance < 100:
+                status = f"Front: {front_distance:.0f}cm"
+            else:
+                status = "Front: Clear"
+            
+            # Show current speed
+            status += f" | Speed: {self.current_speed}%"
+            
+            ir_readings = self.detector.get_ir_readings()
+            if any(ir_readings.values()):
+                ir_active = [k for k, v in ir_readings.items() if v]
+                status += f" | IR: {', '.join(ir_active)}"
+            
+            print(f"\r📍 {status} | Action: {action}", end="", flush=True)
+            
+            # Execute action
+            self.execute_action(action, front_distance)
+            
+            # Small delay for stability
+            time.sleep(0.05)
     
     def start(self):
         """Start navigation system"""
@@ -812,7 +575,7 @@ class NavigationSystem:
         self.navigation_thread.daemon = True
         self.navigation_thread.start()
         
-        print("\n🎯 System Active!")
+        print("\n🎯 Navigation Active!")
         print("Press Ctrl+C to stop\n")
         
         try:
@@ -831,9 +594,6 @@ class NavigationSystem:
         self.motors.stop()
         self.led_all_off()
         
-        # Close Bluetooth
-        self.bt_server.close()
-        
         # Cleanup
         self.motors.cleanup()
         GPIO.cleanup()
@@ -844,14 +604,13 @@ class NavigationSystem:
 def main():
     """Main entry point"""
     print("="*60)
-    print("   INTELLIGENT NAVIGATION SYSTEM WITH BLUETOOTH")
+    print("   INTELLIGENT NAVIGATION SYSTEM")
     print("   - 4x IR Sensors at 45° angles")
     print("   - Ultrasonic Sensor (forward)")
     print("   - Compass reference set at boot")
-    print("   - Bluetooth control & telemetry")
     print("="*60)
     print(f"\n⚙️  Current global speed setting: {ROVER_SPEED}%")
-    print("   To change default speed, edit ROVER_SPEED variable at top of file")
+    print("   To change speed, edit ROVER_SPEED variable at top of file")
     print("   Range: 0 (stop) to 100 (maximum)")
     print()
     
@@ -866,3 +625,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+                                
