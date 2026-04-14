@@ -56,7 +56,8 @@ BT_UUID = "00001101-0000-1000-8000-00805F9B34FB"  # Standard Serial Port Profile
 # ========== GLOBAL SPEED CONFIGURATION ==========
 # ⚙️ ADJUST THIS VALUE TO CHANGE ROVER SPEED (0-100)
 # 0 = stopped, 30 = slow, 60 = medium, 100 = maximum
-global ROVER_SPEED = 40  # Default: 40% speed
+global ROVER_SPEED  # Default: 40% speed
+ROVER_SPEED = 40
 
 # Speed presets for different conditions
 SPEED_PRESETS = {
