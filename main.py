@@ -9,6 +9,9 @@ import time
 import math
 import threading
 import json
+import os
+import re
+import subprocess
 from collections import deque
 import serial
 import serial.tools.list_ports
@@ -17,6 +20,7 @@ import serial.tools.list_ports
 BLUETOOTH_BAUDRATE = 9600
 # Common Bluetooth serial ports on Raspberry Pi
 BLUETOOTH_PORTS = ['/dev/rfcomm0', '/dev/ttyAMA0', '/dev/ttyS0']
+DEVICE_NAME = 'PiRover'
 
 # ========== PIN CONFIGURATION ==========
 PINS = {
@@ -84,7 +88,7 @@ SENSOR_ANGLES = {
 }
 
 class BluetoothController:
-    """Handles Bluetooth communication with PC"""
+    """Handles Bluetooth setup, pairing, and serial communication."""
     
     def __init__(self):
         self.serial_connection = None
@@ -93,6 +97,182 @@ class BluetoothController:
         self.running = False
         self.last_command = None
         self.command_lock = threading.Lock()
+        self.agent_process = None
+
+    def run_command(self, cmd, shell=False, timeout=15):
+        """Run a system command and return stdout on success."""
+        try:
+            result = subprocess.run(
+                cmd,
+                shell=shell,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if result.returncode != 0:
+                command_text = cmd if isinstance(cmd, str) else ' '.join(cmd)
+                stderr = result.stderr.strip() if result.stderr else ''
+                print(f"⚠️  Command failed: {command_text}")
+                if stderr:
+                    print(f"   {stderr}")
+            return result.stdout.strip()
+        except Exception as e:
+            print(f"❌ Command error: {e}")
+            return None
+
+    def configure_bluetooth_daemon(self):
+        """Make Bluetooth discoverable and pairable by default."""
+        try:
+            config_path = '/etc/bluetooth/main.conf'
+            if not os.path.exists(config_path):
+                print(f"⚠️  Bluetooth config not found: {config_path}")
+                return False
+
+            with open(config_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+
+            def upsert(key, value, current_lines):
+                pattern = re.compile(rf'^\s*#?\s*{re.escape(key)}\s*=.*$', re.IGNORECASE)
+                replaced = False
+                updated = []
+                for line in current_lines:
+                    if pattern.match(line):
+                        updated.append(f'{key} = {value}\n')
+                        replaced = True
+                    else:
+                        updated.append(line)
+                if not replaced:
+                    if updated and not updated[-1].endswith('\n'):
+                        updated[-1] = updated[-1] + '\n'
+                    updated.append(f'{key} = {value}\n')
+                return updated
+
+            lines = upsert('DiscoverableTimeout', 0, lines)
+            lines = upsert('PairableTimeout', 0, lines)
+
+            with open(config_path, 'w', encoding='utf-8') as f:
+                f.writelines(lines)
+
+            print('✅ Bluetooth daemon configured for persistent discoverability/pairability')
+            return True
+        except Exception as e:
+            print(f"⚠️  Could not update Bluetooth daemon config: {e}")
+            return False
+
+    def start_bluetooth_agent(self):
+        """Start a persistent bluetoothctl agent with NoInputNoOutput pairing."""
+        try:
+            if self.agent_process and self.agent_process.poll() is None:
+                return True
+
+            self.agent_process = subprocess.Popen(
+                ['bluetoothctl'],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+
+            commands = [
+                'agent NoInputNoOutput',
+                'default-agent',
+                'power on',
+                'pairable on',
+                'pairable-timeout 0',
+                'discoverable on',
+                'discoverable-timeout 0',
+                f'name {DEVICE_NAME}',
+            ]
+            for command in commands:
+                self.agent_process.stdin.write(command + '\n')
+            self.agent_process.stdin.flush()
+
+            print('✅ Bluetooth agent started (NoInputNoOutput)')
+            return True
+        except Exception as e:
+            print(f"⚠️  Failed to start bluetooth agent: {e}")
+            return False
+
+    def add_serial_profile(self):
+        """Register the Serial Port Profile (SPP)."""
+        result = self.run_command(['sdptool', 'add', 'SP'])
+        if result is not None:
+            print('✅ Serial Port Profile registered')
+            return True
+        return False
+
+    def release_rfcomm(self):
+        """Release any existing RFCOMM bindings."""
+        self.run_command(['rfcomm', 'release', '/dev/rfcomm0'])
+        self.run_command(['rfcomm', 'release', '/dev/rfcomm1'])
+
+    def wait_for_connection(self, timeout=60):
+        """Wait for a device to connect and then bind RFCOMM."""
+        print(f"\n📱 Waiting for device connection ({timeout} seconds max)...")
+        print("   Pair from your phone/PC — no PIN should be required")
+
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            connected = self.run_command(['bluetoothctl', 'devices', 'Connected'])
+            if connected:
+                for line in connected.splitlines():
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[0] == 'Device':
+                        mac = parts[1]
+                        print(f"✅ Device connected: {mac}")
+                        self.run_command(['rfcomm', 'bind', '/dev/rfcomm0', mac, '1'], timeout=20)
+                        time.sleep(2)
+                        if os.path.exists('/dev/rfcomm0'):
+                            print('✅ RFCOMM bound to /dev/rfcomm0')
+                            return True
+
+            elapsed = int(time.time() - start_time)
+            if elapsed and elapsed % 10 == 0:
+                print(f"   Still waiting... ({elapsed}s)")
+            time.sleep(2)
+
+        print('⚠️  No device connected within timeout')
+        return False
+
+    def find_and_connect_serial(self):
+        """Open the Bluetooth serial port once RFCOMM is bound."""
+        ports_to_try = ['/dev/rfcomm0'] + BLUETOOTH_PORTS
+
+        for port in ports_to_try:
+            if os.path.exists(port):
+                try:
+                    self.serial_connection = serial.Serial(
+                        port,
+                        BLUETOOTH_BAUDRATE,
+                        timeout=1,
+                        write_timeout=1,
+                    )
+                    print(f"✅ Serial connection opened on {port}")
+                    self.connected = True
+                    return True
+                except Exception as e:
+                    print(f"⚠️  Failed to open {port}: {e}")
+
+        print('❌ Could not open any Bluetooth serial port')
+        return False
+
+    def setup_bluetooth(self):
+        """Complete Bluetooth setup before opening the serial port."""
+        print('\n🔵 Setting up Bluetooth...')
+        self.configure_bluetooth_daemon()
+        self.run_command(['systemctl', 'restart', 'bluetooth'], timeout=30)
+        time.sleep(2)
+        self.release_rfcomm()
+
+        if not self.start_bluetooth_agent():
+            return False
+
+        time.sleep(2)
+        self.add_serial_profile()
+        print(f"✅ Bluetooth configured as '{DEVICE_NAME}'")
+        print('   → Discoverable')
+        print('   → Pairable without PIN')
+        return True
         
     def find_bluetooth_port(self):
         """Find available Bluetooth serial port"""
@@ -114,50 +294,26 @@ class BluetoothController:
         return None
     
     def connect(self):
-        """Establish Bluetooth connection"""
+        """Establish Bluetooth setup and connection."""
         print("\n🔵 Initializing Bluetooth...")
-        
-        bluetooth_port = self.find_bluetooth_port()
-        
-        if bluetooth_port is None:
-            print("⚠️  No Bluetooth port found!")
-            print("   Make sure Bluetooth is enabled and paired with PC")
-            print("   Run: sudo rfcomm listen 0 1")
+
+        if not self.setup_bluetooth():
+            print("⚠️  Bluetooth setup failed - continuing in standalone mode")
             return False
-        
-        try:
-            self.serial_connection = serial.Serial(
-                bluetooth_port, 
-                BLUETOOTH_BAUDRATE, 
-                timeout=1,
-                write_timeout=1
-            )
-            print(f"✅ Bluetooth initialized on {bluetooth_port}")
-            print("📱 Waiting for PC to connect...")
-            print("   (LED 1 is ON - Waiting for connection)")
-            
-            # Wait for connection (blocking read with timeout)
-            self.serial_connection.write(b"ROVER_READY\n")
-            
-            # Try to read connection confirmation
-            start_time = time.time()
-            while time.time() - start_time < 30:  # Wait up to 30 seconds
-                if self.serial_connection.in_waiting > 0:
-                    data = self.serial_connection.readline().decode('utf-8').strip()
-                    if data == "PC_CONNECTED":
-                        self.connected = True
-                        print("✅ PC connected via Bluetooth!")
-                        return True
-                time.sleep(0.1)
-            
-            # If no confirmation but connection exists, consider it connected
-            self.connected = True
-            print("✅ Bluetooth connection established!")
+
+        if not self.wait_for_connection(timeout=90):
+            print("⚠️  Bluetooth connected device not detected yet")
+            return False
+
+        if self.find_and_connect_serial():
+            try:
+                self.serial_connection.write(b"ROVER_READY\n")
+            except Exception:
+                pass
+            print('📱 Bluetooth serial link ready')
             return True
-            
-        except Exception as e:
-            print(f"❌ Bluetooth connection failed: {e}")
-            return False
+
+        return False
     
     def send_data(self, data_dict):
         """Send sensor data to PC"""
@@ -208,6 +364,20 @@ class BluetoothController:
         self.running = False
         if self.serial_connection:
             self.serial_connection.close()
+        if self.agent_process:
+            try:
+                if self.agent_process.stdin:
+                    self.agent_process.stdin.write('quit\n')
+                    self.agent_process.stdin.flush()
+                    self.agent_process.stdin.close()
+            except Exception:
+                pass
+            try:
+                self.agent_process.terminate()
+            except Exception:
+                pass
+            self.agent_process = None
+        self.release_rfcomm()
         self.connected = False
         print("🔵 Bluetooth disconnected")
 
@@ -592,6 +762,7 @@ class NavigationSystem:
     def process_commands(self):
         """Process incoming Bluetooth commands"""
         global ROVER_SPEED
+        self.bluetooth.receive_command()
         command = self.bluetooth.get_last_command()
         
         if not command:
