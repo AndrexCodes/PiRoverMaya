@@ -46,12 +46,52 @@ sleep 2
 sudo rfkill unblock bluetooth
 sleep 1
 
+# ============================================
+# 1b. Setup Auto-Pairing Agent (No PIN Required)
+# ============================================
+echo "Setting up auto-pairing agent..."
+
+# Kill any existing bt-agent
+sudo killall bt-agent 2>/dev/null
+
+# Create bt-agent script if it doesn't exist
+if [ ! -f /usr/local/bin/bt-autopair ]; then
+    sudo tee /usr/local/bin/bt-autopair > /dev/null << 'EOF'
+#!/bin/bash
+killall bt-agent 2>/dev/null
+bt-agent -c NoInputNoOutput &
+EOF
+    sudo chmod 755 /usr/local/bin/bt-autopair
+fi
+
+# Start bt-agent with NoInputNoOutput capability
+sudo /usr/local/bin/bt-autopair
+
+# Create systemd service for auto-pairing if it doesn't exist
+if [ ! -f /etc/systemd/system/bt-agent.service ]; then
+    sudo tee /etc/systemd/system/bt-agent.service > /dev/null << 'EOF'
+[Unit]
+Description=Bluetooth Auto Pairing Agent
+After=bluetooth.service
+
+[Service]
+Type=forking
+ExecStart=/usr/local/bin/bt-autopair
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    sudo systemctl daemon-reload
+    sudo systemctl enable bt-agent.service
+fi
+
 # Add Serial Port Profile
 sudo sdptool add SP
 
 # Configure bluetoothctl for persistent discoverable + pairable
 bluetoothctl power on
-bluetoothctl agent on
+bluetoothctl agent NoInputNoOutput
 bluetoothctl default-agent
 bluetoothctl pairable on
 bluetoothctl pairable-timeout 0
@@ -71,13 +111,16 @@ discoverable on
 discoverable-timeout 0
 pairable on
 pairable-timeout 0
+agent NoInputNoOutput
+default-agent
 EOF
         fi
         sleep 20
     done
 ) &
 
-echo "✅ Bluetooth configured and discoverable"
+echo "✅ Bluetooth configured for auto-pairing (No PIN required)"
+echo "✅ Device is discoverable as 'raspberrypi'"
 
 # ============================================
 # 2. Remove any existing RFCOMM binding
