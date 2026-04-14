@@ -56,8 +56,7 @@ BT_UUID = "00001101-0000-1000-8000-00805F9B34FB"  # Standard Serial Port Profile
 # ========== GLOBAL SPEED CONFIGURATION ==========
 # ⚙️ ADJUST THIS VALUE TO CHANGE ROVER SPEED (0-100)
 # 0 = stopped, 30 = slow, 60 = medium, 100 = maximum
-global ROVER_SPEED  # Default: 40% speed
-ROVER_SPEED = 40
+ROVER_SPEED = 40  # Default: 40% speed
 
 # Speed presets for different conditions
 SPEED_PRESETS = {
@@ -468,6 +467,7 @@ class NavigationSystem:
         self.publish_thread = None
         self.control_mode = "MANUAL"  # MANUAL or AUTO
         self.manual_command = None
+        self.rover_speed = ROVER_SPEED  # Instance variable to avoid global
         
         # LED pins
         self.led_pins = [PINS['LED1'], PINS['LED2'], PINS['LED3']]
@@ -563,12 +563,11 @@ class NavigationSystem:
                 
         elif cmd_type == 'speed':
             # Set global speed
-            new_speed = command.get('speed', ROVER_SPEED)
-            global ROVER_SPEED
-            ROVER_SPEED = max(0, min(100, new_speed))
-            self.current_speed = ROVER_SPEED
+            new_speed = command.get('speed', self.rover_speed)
+            self.rover_speed = max(0, min(100, new_speed))
+            self.current_speed = self.rover_speed
             self.motors.set_speed(self.current_speed)
-            print(f"\n⚡ Speed set to: {ROVER_SPEED}%")
+            print(f"\n⚡ Speed set to: {self.rover_speed}%")
             return True
             
         elif cmd_type == 'manual_control' and self.control_mode == 'MANUAL':
@@ -674,7 +673,7 @@ class NavigationSystem:
             self.motors.stop()
             self.alert_pattern()
             # Reset speed after turn
-            self.current_speed = ROVER_SPEED
+            self.current_speed = self.rover_speed
             self.motors.set_speed(self.current_speed)
             
         elif action == 'TURN_RIGHT':
@@ -687,7 +686,7 @@ class NavigationSystem:
             self.motors.stop()
             self.alert_pattern()
             # Reset speed after turn
-            self.current_speed = ROVER_SPEED
+            self.current_speed = self.rover_speed
             self.motors.set_speed(self.current_speed)
             
         elif action == 'TURN_AROUND':
@@ -702,7 +701,7 @@ class NavigationSystem:
                 self.beep(0.1)
                 time.sleep(0.1)
             # Reset speed
-            self.current_speed = ROVER_SPEED
+            self.current_speed = self.rover_speed
             self.motors.set_speed(self.current_speed)
             
         elif action == 'STOP_AND_BACK':
@@ -725,13 +724,13 @@ class NavigationSystem:
             time.sleep(TURN_DURATION)
             self.motors.stop()
             # Reset speed
-            self.current_speed = ROVER_SPEED
+            self.current_speed = self.rover_speed
             self.motors.set_speed(self.current_speed)
     
     def initialize(self):
         """Initialize all systems"""
         print("\n🚀 Initializing Navigation System...")
-        print(f"⚙️  Global speed setting: {ROVER_SPEED}%")
+        print(f"⚙️  Global speed setting: {self.rover_speed}%")
         print(f"   - Cruise speed: {SPEED_PRESETS['CRUISE']}%")
         print(f"   - Slow speed: {SPEED_PRESETS['SLOW']}%")
         print(f"   - Turn speed: {SPEED_PRESETS['TURN']}%")
