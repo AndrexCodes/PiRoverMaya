@@ -27,95 +27,174 @@ OBSTACLE_THRESHOLD = 30
 CRITICAL_DISTANCE = 15
 TURN_DURATION = 0.8
 
+# class BLEBeacon:
+#     """Simple BLE beacon using hcitool commands"""
+    
+#     def __init__(self):
+#         self.running = False
+#         self.last_data = ""
+        
+#     def setup(self):
+#         """Initialize Bluetooth for advertising"""
+#         try:
+#             # Bring up Bluetooth interface
+#             subprocess.run(['sudo', 'hciconfig', 'hci0', 'up'], capture_output=True)
+#             subprocess.run(['sudo', 'hciconfig', 'hci0', 'name', DEVICE_NAME], capture_output=True)
+#             subprocess.run(['sudo', 'hciconfig', 'hci0', 'piscan'], capture_output=True)
+            
+#             # Stop any existing advertising
+#             subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
+            
+#             print(f"✅ BLE beacon ready on hci0 as '{DEVICE_NAME}'")
+#             return True
+#         except Exception as e:
+#             print(f"⚠️ BLE setup error: {e}")
+#             return False
+    
+#     def broadcast(self, distance, speed, auto_mode, ir_list):
+#         """Broadcast sensor data"""
+#         if not self.running:
+#             return
+        
+#         # Create data string (keep it short)
+#         # Format: D{dist}S{speed}M{mode}I{ir_bits}
+#         ir_bits = ''.join([str(x) for x in ir_list])
+#         data_str = f"D{distance}S{speed}M{1 if auto_mode else 0}I{ir_bits}"
+        
+#         # Only update if data changed
+#         if data_str == self.last_data:
+#             return
+#         self.last_data = data_str
+        
+#         # Build advertising packet
+#         adv_data = bytearray()
+        
+#         # Flags (2 bytes)
+#         adv_data.append(0x02)  # Length
+#         adv_data.append(0x01)  # Type: Flags
+#         adv_data.append(0x06)  # LE General Discoverable
+        
+#         # Local Name
+#         name_bytes = DEVICE_NAME.encode('utf-8')
+#         adv_data.append(len(name_bytes) + 1)
+#         adv_data.append(0x09)  # Type: Complete Local Name
+#         adv_data.extend(name_bytes)
+        
+#         # Manufacturer Specific Data (sensor readings)
+#         data_bytes = data_str.encode('utf-8')
+#         adv_data.append(len(data_bytes) + 2)
+#         adv_data.append(0xFF)  # Type: Manufacturer Specific
+#         adv_data.append(0x4C)  # Company ID (Apple)
+#         adv_data.append(0x00)
+#         adv_data.extend(data_bytes)
+        
+#         # Pad to 31 bytes
+#         while len(adv_data) < 31:
+#             adv_data.append(0x00)
+        
+#         # Send command to set advertising data
+#         try:
+#             # Build command
+#             cmd = ['sudo', 'hcitool', 'cmd', '0x08', '0x0008']
+#             for byte in adv_data[:31]:
+#                 cmd.append(f'{byte:02x}')
+            
+#             # Execute command
+#             subprocess.run(' '.join(cmd), shell=True, capture_output=True)
+            
+#             # Enable advertising
+#             subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '01'], 
+#                           capture_output=True)
+            
+#         except Exception as e:
+#             pass
+    
+#     def start(self):
+#         self.running = True
+#         return self.setup()
+    
+#     def stop(self):
+#         self.running = False
+#         subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
+
 class BLEBeacon:
-    """Simple BLE beacon using hcitool commands"""
+    """Reliable BLE Beacon for PiRover"""
     
     def __init__(self):
         self.running = False
         self.last_data = ""
         
     def setup(self):
-        """Initialize Bluetooth for advertising"""
         try:
-            # Bring up Bluetooth interface
-            subprocess.run(['sudo', 'hciconfig', 'hci0', 'up'], capture_output=True)
-            subprocess.run(['sudo', 'hciconfig', 'hci0', 'name', DEVICE_NAME], capture_output=True)
-            subprocess.run(['sudo', 'hciconfig', 'hci0', 'piscan'], capture_output=True)
+            subprocess.run(['sudo', 'hciconfig', 'hci0', 'up'], check=True, capture_output=True)
+            subprocess.run(['sudo', 'hciconfig', 'hci0', 'name', DEVICE_NAME], check=True, capture_output=True)
+            subprocess.run(['sudo', 'hciconfig', 'hci0', 'piscan'], check=True, capture_output=True)
             
-            # Stop any existing advertising
-            subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
-            
-            print(f"✅ BLE beacon ready on hci0 as '{DEVICE_NAME}'")
+            print(f"✅ BLE beacon ready as '{DEVICE_NAME}'")
             return True
         except Exception as e:
-            print(f"⚠️ BLE setup error: {e}")
+            print(f"❌ BLE setup failed: {e}")
             return False
-    
+
     def broadcast(self, distance, speed, auto_mode, ir_list):
-        """Broadcast sensor data"""
         if not self.running:
             return
         
-        # Create data string (keep it short)
-        # Format: D{dist}S{speed}M{mode}I{ir_bits}
-        ir_bits = ''.join([str(x) for x in ir_list])
+        ir_bits = ''.join(map(str, ir_list))
         data_str = f"D{distance}S{speed}M{1 if auto_mode else 0}I{ir_bits}"
         
-        # Only update if data changed
         if data_str == self.last_data:
             return
         self.last_data = data_str
-        
-        # Build advertising packet
+
+        # === Build proper advertising packet ===
         adv_data = bytearray()
-        
-        # Flags (2 bytes)
-        adv_data.append(0x02)  # Length
-        adv_data.append(0x01)  # Type: Flags
-        adv_data.append(0x06)  # LE General Discoverable
-        
-        # Local Name
+
+        # 1. Flags
+        adv_data.extend([0x02, 0x01, 0x06])                    # LE General Discoverable
+
+        # 2. Local Name
         name_bytes = DEVICE_NAME.encode('utf-8')
-        adv_data.append(len(name_bytes) + 1)
-        adv_data.append(0x09)  # Type: Complete Local Name
+        adv_data.extend([len(name_bytes) + 1, 0x09])
         adv_data.extend(name_bytes)
-        
-        # Manufacturer Specific Data (sensor readings)
+
+        # 3. Manufacturer Specific Data (Your sensor data)
         data_bytes = data_str.encode('utf-8')
-        adv_data.append(len(data_bytes) + 2)
-        adv_data.append(0xFF)  # Type: Manufacturer Specific
-        adv_data.append(0x4C)  # Company ID (Apple)
-        adv_data.append(0x00)
+        adv_data.extend([len(data_bytes) + 3, 0xFF, 0x4C, 0x00])  # Apple Company ID
         adv_data.extend(data_bytes)
-        
-        # Pad to 31 bytes
+
+        # Pad to 31 bytes (maximum for legacy advertising)
         while len(adv_data) < 31:
             adv_data.append(0x00)
-        
-        # Send command to set advertising data
+
+        # === Send using hcitool ===
         try:
-            # Build command
-            cmd = ['sudo', 'hcitool', 'cmd', '0x08', '0x0008']
-            for byte in adv_data[:31]:
-                cmd.append(f'{byte:02x}')
+            hex_string = ' '.join(f'{b:02x}' for b in adv_data)
+            result = subprocess.run(
+                f"sudo hcitool cmd 0x08 0x0008 {hex_string}",
+                shell=True, capture_output=True, text=True
+            )
             
-            # Execute command
-            subprocess.run(' '.join(cmd), shell=True, capture_output=True)
-            
-            # Enable advertising
-            subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '01'], 
-                          capture_output=True)
-            
+            if result.returncode != 0:
+                print(f"⚠️ hcitool failed: {result.stderr.strip()}")
+            else:
+                # Enable advertising
+                subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '01'], 
+                             capture_output=True, check=False)
+                
         except Exception as e:
-            pass
-    
+            print(f"BLE broadcast error: {e}")
+
     def start(self):
         self.running = True
         return self.setup()
-    
+
     def stop(self):
         self.running = False
-        subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
+        try:
+            subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
+        except:
+            pass
 
 class MotorController:
     def __init__(self):
