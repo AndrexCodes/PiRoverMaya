@@ -56,47 +56,46 @@ class BLEBeacon:
             print(f"⚠️ BLE setup error: {e}")
             return False
     
-    def broadcast(self, distance, ir_sensors, speed, auto_mode):
+    def broadcast(self, distance, speed, auto_mode, ir_list):
         """Broadcast sensor data as BLE beacon"""
         if not self.running:
             return
         
-        # Create simple data packet
-        # Format: distance,speed,auto_mode,ir_tl,ir_tr,ir_bl,ir_br
-        data_str = f"{distance},{speed},{1 if auto_mode else 0},{ir_sensors[0]},{ir_sensors[1]},{ir_sensors[2]},{ir_sensors[3]}"
+        # Create simple data packet as JSON-like string
+        # Format: {d:45,s:40,m:1,i:1010}
+        # Where i is 4 bits for IR sensors (TL,TR,BL,BR)
+        ir_bits = 0
+        if ir_list[0]: ir_bits |= 1  # TL
+        if ir_list[1]: ir_bits |= 2  # TR  
+        if ir_list[2]: ir_bits |= 4  # BL
+        if ir_list[3]: ir_bits |= 8  # BR
+        
+        # Create compact data string
+        data_str = f"d:{distance},s:{speed},m:{1 if auto_mode else 0},i:{ir_bits}"
         data_bytes = data_str.encode('utf-8')[:25]  # Max 25 bytes
         
-        # Build advertising packet (iBeacon style for compatibility)
-        # Length: 1E (30 bytes total)
-        # Type: FF (Manufacturer specific)
-        # Company ID: 4C00 (Apple) - more devices recognize this
-        
+        # Build advertising packet
         adv_data = bytearray()
-        adv_data.append(0x1E)  # Total length
+        adv_data.append(0x02)  # Flags length
+        adv_data.append(0x01)  # Flags type
+        adv_data.append(0x06)  # LE General Discoverable
+        
+        # Add local name
+        name_bytes = DEVICE_NAME.encode('utf-8')
+        adv_data.append(len(name_bytes) + 1)
+        adv_data.append(0x09)  # Complete Local Name
+        adv_data.extend(name_bytes)
+        
+        # Add manufacturer specific data with sensor readings
+        adv_data.append(len(data_bytes) + 2)
         adv_data.append(0xFF)  # Manufacturer specific
         adv_data.append(0x4C)  # Company ID (Apple)
         adv_data.append(0x00)
-        adv_data.append(0x02)  # iBeacon type
-        adv_data.append(0x15)  # iBeacon length
-        
-        # UUID (16 bytes) - use fixed UUID for PiRover
-        uuid = b'PiRoverSensors!'  # 16 bytes exactly
-        adv_data.extend(uuid)
-        
-        # Major (2 bytes) - distance
-        adv_data.extend(struct.pack('>H', int(distance) if distance < 65535 else 65535))
-        
-        # Minor (2 bytes) - speed and mode
-        minor = (int(speed) << 8) | (1 if auto_mode else 0)
-        adv_data.extend(struct.pack('>H', minor))
-        
-        # TX Power (1 byte)
-        adv_data.append(0xC8)  # -56 dBm
-        
-        # Add sensor data as manufacturer data
-        adv_data.append(len(data_bytes) + 1)
-        adv_data.append(0xFF)
         adv_data.extend(data_bytes)
+        
+        # Pad to 31 bytes
+        while len(adv_data) < 31:
+            adv_data.append(0x00)
         
         # Send via hcitool
         try:
@@ -108,7 +107,7 @@ class BLEBeacon:
             # Enable advertising
             subprocess.run(['sudo', 'hcitool', '-i', self.bt_interface, 'cmd', '0x08', '0x000a', '01'], 
                           capture_output=True)
-        except:
+        except Exception as e:
             pass
     
     def start(self):
@@ -238,10 +237,10 @@ class ObstacleDetector:
     
     def get_ir(self):
         return [
-            GPIO.input(PINS['IR_TOP_LEFT']) == 0,    # TL
-            GPIO.input(PINS['IR_TOP_RIGHT']) == 0,   # TR
-            GPIO.input(PINS['IR_BOTTOM_LEFT']) == 0, # BL
-            GPIO.input(PINS['IR_BOTTOM_RIGHT']) == 0 # BR
+            1 if GPIO.input(PINS['IR_TOP_LEFT']) == 0 else 0,    # TL
+            1 if GPIO.input(PINS['IR_TOP_RIGHT']) == 0 else 0,   # TR
+            1 if GPIO.input(PINS['IR_BOTTOM_LEFT']) == 0 else 0, # BL
+            1 if GPIO.input(PINS['IR_BOTTOM_RIGHT']) == 0 else 0 # BR
         ]
     
     def analyze(self):
@@ -251,9 +250,9 @@ class ObstacleDetector:
         if dist < CRITICAL_DISTANCE:
             return 'BACK'
         if dist < OBSTACLE_THRESHOLD:
-            if not ir[0]:  # Top-Left clear
+            if ir[0] == 0:  # Top-Left clear
                 return 'LEFT'
-            if not ir[1]:  # Top-Right clear
+            if ir[1] == 0:  # Top-Right clear
                 return 'RIGHT'
             return 'TURN'
         return 'FWD'
@@ -317,9 +316,10 @@ class NavigationSystem:
         # Get current data
         distance = int(self.detector.distance) if self.detector.distance < 999 else 999
         ir = self.detector.get_ir()
+        speed = self.motors.current_speed
         
-        # Broadcast as simple string: distance,speed,auto_mode,ir0,ir1,ir2,ir3
-        self.ble.broadcast(distance, self.motors.current_speed, self.auto_mode, ir)
+        # Broadcast with correct parameter order: (distance, speed, auto_mode, ir_list)
+        self.ble.broadcast(distance, speed, self.auto_mode, ir)
     
     def run(self):
         self.running = True
