@@ -117,8 +117,87 @@ TURN_DURATION = 0.8
 #         self.running = False
 #         subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
 
+# class BLEBeacon:
+#     """Reliable BLE Beacon for PiRover"""
+    
+#     def __init__(self):
+#         self.running = False
+#         self.last_data = ""
+        
+#     def setup(self):
+#         try:
+#             subprocess.run(['sudo', 'hciconfig', 'hci0', 'up'], check=True, capture_output=True)
+#             subprocess.run(['sudo', 'hciconfig', 'hci0', 'name', DEVICE_NAME], check=True, capture_output=True)
+#             subprocess.run(['sudo', 'hciconfig', 'hci0', 'piscan'], check=True, capture_output=True)
+            
+#             print(f"✅ BLE beacon ready as '{DEVICE_NAME}'")
+#             return True
+#         except Exception as e:
+#             print(f"❌ BLE setup failed: {e}")
+#             return False
+
+#     def broadcast(self, distance, speed, auto_mode, ir_list):
+#         if not self.running:
+#             return
+        
+#         ir_bits = ''.join(map(str, ir_list))
+#         data_str = f"D{distance}S{speed}M{1 if auto_mode else 0}I{ir_bits}"
+        
+#         if data_str == self.last_data:
+#             return
+#         self.last_data = data_str
+
+#         # === Build proper advertising packet ===
+#         adv_data = bytearray()
+
+#         # 1. Flags
+#         adv_data.extend([0x02, 0x01, 0x06])                    # LE General Discoverable
+
+#         # 2. Local Name
+#         name_bytes = DEVICE_NAME.encode('utf-8')
+#         adv_data.extend([len(name_bytes) + 1, 0x09])
+#         adv_data.extend(name_bytes)
+
+#         # 3. Manufacturer Specific Data (Your sensor data)
+#         data_bytes = data_str.encode('utf-8')
+#         adv_data.extend([len(data_bytes) + 3, 0xFF, 0x4C, 0x00])  # Apple Company ID
+#         adv_data.extend(data_bytes)
+
+#         # Pad to 31 bytes (maximum for legacy advertising)
+#         while len(adv_data) < 31:
+#             adv_data.append(0x00)
+
+#         # === Send using hcitool ===
+#         try:
+#             hex_string = ' '.join(f'{b:02x}' for b in adv_data)
+#             result = subprocess.run(
+#                 f"sudo hcitool cmd 0x08 0x0008 {hex_string}",
+#                 shell=True, capture_output=True, text=True
+#             )
+            
+#             if result.returncode != 0:
+#                 print(f"⚠️ hcitool failed: {result.stderr.strip()}")
+#             else:
+#                 # Enable advertising
+#                 subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '01'], 
+#                              capture_output=True, check=False)
+                
+#         except Exception as e:
+#             print(f"BLE broadcast error: {e}")
+
+#     def start(self):
+#         self.running = True
+#         return self.setup()
+
+#     def stop(self):
+#         self.running = False
+#         try:
+#             subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
+#         except:
+#             pass
+
 class BLEBeacon:
-    """Reliable BLE Beacon for PiRover"""
+    """BLE Beacon using bluetoothctl (modern & reliable)"""
     
     def __init__(self):
         self.running = False
@@ -126,14 +205,14 @@ class BLEBeacon:
         
     def setup(self):
         try:
+            # Basic setup
             subprocess.run(['sudo', 'hciconfig', 'hci0', 'up'], check=True, capture_output=True)
-            subprocess.run(['sudo', 'hciconfig', 'hci0', 'name', DEVICE_NAME], check=True, capture_output=True)
             subprocess.run(['sudo', 'hciconfig', 'hci0', 'piscan'], check=True, capture_output=True)
             
-            print(f"✅ BLE beacon ready as '{DEVICE_NAME}'")
+            print(f"✅ BLE ready using bluetoothctl")
             return True
         except Exception as e:
-            print(f"❌ BLE setup failed: {e}")
+            print(f"❌ Setup failed: {e}")
             return False
 
     def broadcast(self, distance, speed, auto_mode, ir_list):
@@ -141,49 +220,27 @@ class BLEBeacon:
             return
         
         ir_bits = ''.join(map(str, ir_list))
-        data_str = f"D{distance}S{speed}M{1 if auto_mode else 0}I{ir_bits}"
+        payload = f"D{distance}S{speed}M{1 if auto_mode else 0}I{ir_bits}"
         
-        if data_str == self.last_data:
+        if payload == self.last_data:
             return
-        self.last_data = data_str
+        self.last_data = payload
 
-        # === Build proper advertising packet ===
-        adv_data = bytearray()
-
-        # 1. Flags
-        adv_data.extend([0x02, 0x01, 0x06])                    # LE General Discoverable
-
-        # 2. Local Name
-        name_bytes = DEVICE_NAME.encode('utf-8')
-        adv_data.extend([len(name_bytes) + 1, 0x09])
-        adv_data.extend(name_bytes)
-
-        # 3. Manufacturer Specific Data (Your sensor data)
-        data_bytes = data_str.encode('utf-8')
-        adv_data.extend([len(data_bytes) + 3, 0xFF, 0x4C, 0x00])  # Apple Company ID
-        adv_data.extend(data_bytes)
-
-        # Pad to 31 bytes (maximum for legacy advertising)
-        while len(adv_data) < 31:
-            adv_data.append(0x00)
-
-        # === Send using hcitool ===
         try:
-            hex_string = ' '.join(f'{b:02x}' for b in adv_data)
-            result = subprocess.run(
-                f"sudo hcitool cmd 0x08 0x0008 {hex_string}",
-                shell=True, capture_output=True, text=True
-            )
+            # Use heredoc to control bluetoothctl cleanly
+            cmd = f'''sudo bluetoothctl << 'EOF'
+menu advertise
+clear
+name PiRover
+manufacturer 0x004c {payload.encode().hex()}
+discoverable on
+back
+advertise on
+EOF'''
+            subprocess.run(cmd, shell=True, capture_output=True, timeout=2)
             
-            if result.returncode != 0:
-                print(f"⚠️ hcitool failed: {result.stderr.strip()}")
-            else:
-                # Enable advertising
-                subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '01'], 
-                             capture_output=True, check=False)
-                
         except Exception as e:
-            print(f"BLE broadcast error: {e}")
+            print(f"Broadcast error: {e}")
 
     def start(self):
         self.running = True
@@ -192,7 +249,7 @@ class BLEBeacon:
     def stop(self):
         self.running = False
         try:
-            subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
+            subprocess.run("sudo bluetoothctl advertise off", shell=True, capture_output=True)
         except:
             pass
 
