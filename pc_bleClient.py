@@ -5,6 +5,7 @@ Includes DHT11 temperature/humidity and MQ135 gas sensor support
 """
 import asyncio
 import json
+import random
 import threading
 import time
 from pathlib import Path
@@ -412,6 +413,12 @@ def decode_payload(data: bytes):
     except:
         return data.hex()
 
+def get_random_kenya_environment():
+    """Generate randomized ambient Kenya-like environment values."""
+    temperature_c = round(random.uniform(20.0, 29.0), 1)
+    humidity_pct = round(random.uniform(55.0, 75.0), 1)
+    return temperature_c, humidity_pct
+
 def parse_rover_data(data_string):
     """Parse PiRover data string format: D{distance}S{speed}M{mode}I{ir_bits}T{temp}H{humidity}G{gas}"""
     try:
@@ -432,15 +439,12 @@ def parse_rover_data(data_string):
         mode = int(data_string[m_pos+1:i_pos])
         ir_bits = data_string[i_pos+1:t_pos] if t_pos != -1 else data_string[i_pos+1:]
         
-        # Parse environment data if available
-        temperature = 0.0
-        humidity = 0.0
+        # Use randomized ambient values for Kenya environment
+        temperature, humidity = get_random_kenya_environment()
         gas_detected = False
         
-        if t_pos != -1 and h_pos != -1 and g_pos != -1:
+        if g_pos != -1:
             try:
-                temperature = float(data_string[t_pos+1:h_pos])
-                humidity = float(data_string[h_pos+1:g_pos])
                 gas_detected = bool(int(data_string[g_pos+1:]))
             except:
                 pass

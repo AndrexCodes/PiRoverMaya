@@ -3,10 +3,10 @@
     "name": "PiRover",
     "address": "B8:27:EB:89:C1:AA",
     "rssi": -127,
-    "payload": "D214S40M1I1111",
-    "last_seen": "12:05:46",
+    "payload": "D198S40M1I1111",
+    "last_seen": "12:27:29",
     "parsed_data": {
-      "distance_cm": 214,
+      "distance_cm": 198,
       "speed_percent": 40,
       "mode": "AUTO",
       "mode_raw": 1,
@@ -17,6 +17,9 @@
         "bottom_right": 1
       },
       "ir_raw": "1111",
+      "temperature": 0.0,
+      "humidity": 0.0,
+      "gas_detected": false,
       "obstacle_detected": false,
       "critical_distance": false
     }
