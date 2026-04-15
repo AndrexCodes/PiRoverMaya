@@ -1,129 +1,16 @@
 {
+  "77:39:29:B4:35:6F": {
+    "name": null,
+    "address": "77:39:29:B4:35:6F",
+    "rssi": -84,
+    "payload": ".L\u0006",
+    "last_seen": "11:18:46.817"
+  },
   "C6:15:99:CF:2C:AC": {
     "name": "BT05",
     "address": "C6:15:99:CF:2C:AC",
-    "rssi": -57,
-    "payload": {
-      "manufacturer_data": {},
-      "local_name": "BT05",
-      "service_data": {
-        "0000cbff-0000-1000-8000-00805f9b34fb": "113a04191326106364040a140000000000"
-      }
-    },
-    "last_seen": "11:08:01.116"
-  },
-  "59:E8:FE:A4:99:F5": {
-    "name": "Unknown",
-    "address": "59:E8:FE:A4:99:F5",
-    "rssi": -127,
-    "payload": {
-      "manufacturer_data": {
-        "0x0075": "a0439ed2a0a9"
-      },
-      "service_data": {},
-      "local_name": null,
-      "service_uuids": [],
-      "tx_power": null
-    },
-    "last_seen": "10:59:38.597"
-  },
-  "26:93:70:91:0F:4F": {
-    "name": null,
-    "address": "26:93:70:91:0F:4F",
-    "rssi": -96,
-    "payload": {
-      "manufacturer_data": {
-        "0x0006": "0109210aaf1ad00085444445534b544f502d385633304b3546"
-      },
-      "local_name": null,
-      "service_data": {}
-    },
-    "last_seen": "11:08:34.313"
-  },
-  "CC:02:3B:51:27:31": {
-    "name": "BT05",
-    "address": "CC:02:3B:51:27:31",
-    "rssi": -56,
-    "payload": {
-      "manufacturer_data": {},
-      "local_name": "BT05",
-      "service_data": {
-        "0000cbff-0000-1000-8000-00805f9b34fb": "113a04191326106464040a320000000000"
-      }
-    },
-    "last_seen": "11:08:10.693"
-  },
-  "26:68:CC:28:07:F7": {
-    "name": "Unknown",
-    "address": "26:68:CC:28:07:F7",
-    "rssi": -127,
-    "payload": {
-      "manufacturer_data": {
-        "0x0006": "010920220f0f7ffb9204992a59df84c61ce4019420b43d0065812a"
-      },
-      "service_data": {},
-      "local_name": null,
-      "service_uuids": [],
-      "tx_power": null
-    },
-    "last_seen": "10:57:48.770"
-  },
-  "47:FC:31:B5:B9:74": {
-    "name": "Unknown",
-    "address": "47:FC:31:B5:B9:74",
-    "rssi": -127,
-    "payload": {
-      "manufacturer_data": {
-        "0x0075": "e98be39b37e5"
-      },
-      "service_data": {},
-      "local_name": null,
-      "service_uuids": [],
-      "tx_power": null
-    },
-    "last_seen": "10:59:42.353"
-  },
-  "4D:53:B3:0F:95:23": {
-    "name": "Unknown",
-    "address": "4D:53:B3:0F:95:23",
-    "rssi": -127,
-    "payload": {
-      "manufacturer_data": {
-        "0x0075": "53542c0da760"
-      },
-      "service_data": {},
-      "local_name": null,
-      "service_uuids": [],
-      "tx_power": null
-    },
-    "last_seen": "11:01:40.840"
-  },
-  "7C:D9:F4:02:50:E2": {
-    "name": "Unknown",
-    "address": "7C:D9:F4:02:50:E2",
-    "rssi": -127,
-    "payload": {
-      "manufacturer_data": {
-        "0x004c": "0215ffffffffde0bb01861c755aa89b65ac30c720055c4"
-      },
-      "service_data": {},
-      "local_name": null,
-      "service_uuids": [],
-      "tx_power": null
-    },
-    "last_seen": "11:00:37.108"
-  },
-  "47:20:04:0F:4D:2E": {
-    "name": null,
-    "address": "47:20:04:0F:4D:2E",
-    "rssi": -79,
-    "payload": {
-      "manufacturer_data": {
-        "0x0075": "2e4c8be5b606"
-      },
-      "local_name": null,
-      "service_data": {}
-    },
-    "last_seen": "11:08:32.129"
+    "rssi": -59,
+    "payload": "",
+    "last_seen": "11:18:46.835"
   }
 }

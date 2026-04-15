@@ -1,124 +1,86 @@
 #!/usr/bin/env python3
 """
-PiRover BLE Scanner - Optimized for your custom beacon
+PiRover Dedicated Scanner - Optimized for BlueZ / hcitool beacons
 """
 
 import asyncio
 import json
 from pathlib import Path
 from datetime import datetime
-from bleak import BleakScanner
+from bleak import BleakScanner, AdvertisementData, BLEDevice
 
 
 OUTPUT_FILE = Path("ble_devices.json")
 device_store = {}
 
 
-def _load_existing_store():
-    global device_store
-    if OUTPUT_FILE.exists():
-        try:
-            with OUTPUT_FILE.open("r", encoding="utf-8") as f:
-                loaded = json.load(f)
-                if isinstance(loaded, dict):
-                    device_store = loaded
-        except Exception:
-            device_store = {}
-
-
-def _save_store():
-    with OUTPUT_FILE.open("w", encoding="utf-8") as f:
-        json.dump(device_store, f, indent=2)
-
-
-def decode_pirover_payload(data: bytes) -> str:
-    """Decode your custom DxxSxxMxxIxxxx payload"""
+def decode_pirover_data(data: bytes):
     try:
         text = data.decode('utf-8', errors='ignore')
-        if text.startswith('D'):
+        if text.startswith('D') and 'S' in text:
             return text
         return text
     except:
         return data.hex()
 
 
-def simple_callback(device, advertisement_data):
+def callback(device: BLEDevice, advertisement: AdvertisementData):
+    # if not device.name or "PiRover" not in device.name:
+        # return  # Only show PiRover (remove this line if you want everything)
 
-    """Enhanced callback focused on PiRover"""
     timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
-    # Filter to show only relevant devices
-    name = device.name or "Unknown"
-    if "PiRover" not in name and "pirov" not in name.lower():
-        return  # Optional: remove this line if you want ALL devices
+    print(f"\n{'='*85}")
+    print(f"[{timestamp}] ✅ PiRover DETECTED on PC!")
+    print(f"{'='*85}")
+    print(f"Name      : {device.name}")
+    print(f"Address   : {device.address}")
+    print(f"RSSI      : {advertisement.rssi} dBm")
 
-    print(f"\n{'='*80}")
-    print(f"[{timestamp}] 🛠️  PiRover DETECTED!")
-    print(f"{'='*80}")
-    print(f"📱 Name       : {device.name}")
-    print(f"🔗 Address    : {device.address}")
-    print(f"📶 RSSI       : {advertisement_data.rssi} dBm")
+    # Manufacturer Data (this is where your payload lives)
+    if advertisement.manufacturer_data:
+        print(f"\n📦 Manufacturer Data:")
+        for cid, data in advertisement.manufacturer_data.items():
+            print(f"   Company ID : 0x{cid:04x}")
+            print(f"   Raw        : {data.hex()}")
+            print(f"   Payload    : {decode_pirover_data(data)}")
 
-    # Save to JSON
+    # Save to file
     device_store[device.address] = {
         "name": device.name,
         "address": device.address,
-        "rssi": advertisement_data.rssi,
-        "payload": {
-            "manufacturer_data": {
-                f"0x{cid:04x}": data.hex() 
-                for cid, data in advertisement_data.manufacturer_data.items()
-            },
-            "local_name": advertisement_data.local_name,
-            "service_data": {
-                str(uuid): data.hex() 
-                for uuid, data in advertisement_data.service_data.items()
-            }
-        },
-        "last_seen": timestamp,
+        "rssi": advertisement.rssi,
+        "payload": decode_pirover_data(next(iter(advertisement.manufacturer_data.values()), b'')),
+        "last_seen": timestamp
     }
-    _save_store()
+    with OUTPUT_FILE.open("w", encoding="utf-8") as f:
+        json.dump(device_store, f, indent=2)
 
-    # === Manufacturer Data (Most Important for PiRover) ===
-    if advertisement_data.manufacturer_data:
-        print(f"\n📦 Manufacturer Data:")
-        for company_id, data in advertisement_data.manufacturer_data.items():
-            print(f"   Company ID : 0x{company_id:04x}")
-            print(f"   Raw Hex    : {data.hex()}")
-            decoded = decode_pirover_payload(data)
-            print(f"   Decoded    : {decoded}")
-
-    # Local Name
-    if advertisement_data.local_name:
-        print(f"🏷️  Local Name : {advertisement_data.local_name}")
-
-    # Service Data (if any)
-    if advertisement_data.service_data:
-        print(f"\n🔧 Service Data:")
-        for uuid, data in advertisement_data.service_data.items():
-            print(f"   UUID : {uuid}")
-            print(f"   Data : {data.hex()}")
-
-    print(f"{'='*80}\n")
+    print(f"{'='*85}\n")
 
 
-async def scan():
-    _load_existing_store()
-    print("🔍 Starting PiRover BLE Scanner...")
-    print("Looking for 'PiRover' beacon with custom payload...\n")
-    print("Press Ctrl+C to stop\n")
+async def main():
+    global device_store
+    print("🔍 Starting Advanced PiRover Scanner on PC...")
+    print("Waiting for PiRover beacon...\n")
 
-    scanner = BleakScanner(detection_callback=simple_callback)
+    # Important options for better detection
+    scanner = BleakScanner(
+        detection_callback=callback,
+        scanning_mode="active",           # Very important!
+        # adapter="hci0"                  # Uncomment if you have multiple adapters
+    )
 
     try:
         await scanner.start()
-        await asyncio.sleep(3600)   # Run for 1 hour
+        print("📡 Scanning... (Active mode)")
+        await asyncio.sleep(3600)         # Run for 1 hour
     except KeyboardInterrupt:
-        print("\n🛑 Stopping scanner...")
+        print("\n🛑 Stopped by user")
     finally:
         await scanner.stop()
-        print("✅ Scan stopped.")
+        print("✅ Scanner stopped.")
 
 
 if __name__ == "__main__":
-    asyncio.run(scan())
+    asyncio.run(main())

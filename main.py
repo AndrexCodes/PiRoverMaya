@@ -28,6 +28,7 @@ CRITICAL_DISTANCE = 15
 TURN_DURATION = 0.8
 
 class BLEBeacon:
+
     """Simple BLE beacon using hcitool - Fixed version"""
     
     def __init__(self):
@@ -35,8 +36,10 @@ class BLEBeacon:
         self.last_data = ""
         
     def setup(self):
+
         """Initialize Bluetooth"""
         try:
+
             # Bring up Bluetooth
             subprocess.run(['sudo', 'hciconfig', 'hci0', 'up'], capture_output=True)
             
@@ -46,6 +49,10 @@ class BLEBeacon:
             # Stop any existing advertising
             subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
             
+            # Extra settings for better compatibility
+            subprocess.run(['sudo', 'hciconfig', 'hci0', 'lestate'], capture_output=True)
+            subprocess.run(['sudo', 'hciconfig', 'hci0', 'txpower', '6'], capture_output=True)
+
             print(f"✅ BLE beacon ready on hci0 as '{DEVICE_NAME}'")
             return True
         except Exception as e:
@@ -65,8 +72,8 @@ class BLEBeacon:
         except:
             pass
 
-    def broadcast(self, distance, speed, auto_mode, ir_list):
-        """Broadcast sensor data"""
+        def broadcast(self, distance, speed, auto_mode, ir_list):
+        """Improved broadcast - much better compatibility with Bleak/BlueZ"""
         if not self.running:
             return
 
@@ -79,37 +86,39 @@ class BLEBeacon:
 
         adv_data = bytearray()
 
-        # Flags
-        adv_data.extend([0x02, 0x01, 0x06])
+        # Flags (must come first)
+        adv_data.extend([0x02, 0x01, 0x06])   # LE General Discoverable, BR/EDR Not Supported
 
-        # Complete Local Name → This makes "PiRover" visible everywhere
+        # Local Name
         name_bytes = DEVICE_NAME.encode('utf-8')
         adv_data.extend([len(name_bytes) + 1, 0x09])
         adv_data.extend(name_bytes)
 
-        # Manufacturer Specific Data (your sensor payload)
+        # Manufacturer Specific Data
         data_bytes = data_str.encode('utf-8')
-        adv_data.extend([len(data_bytes) + 2, 0xFF, 0x4C, 0x00])
+        adv_data.extend([len(data_bytes) + 2, 0xFF, 0x4C, 0x00])  # Apple company ID
         adv_data.extend(data_bytes)
 
-        # Pad to 31 bytes
+        # === CRITICAL: Calculate real length and pad correctly ===
+        real_length = len(adv_data)
         while len(adv_data) < 31:
             adv_data.append(0x00)
 
         try:
-            # Send advertising data
-            cmd = ['sudo', 'hcitool', 'cmd', '0x08', '0x0008', f'{len(adv_data):02x}']
+            # Command with correct length byte
+            cmd = ['sudo', 'hcitool', 'cmd', '0x08', '0x0008', f'{real_length:02x}']
             for b in adv_data:
                 cmd.append(f'{b:02x}')
-            
+
             subprocess.run(' '.join(cmd), shell=True, capture_output=True)
 
             # Enable advertising
-            subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '01'], capture_output=True)
+            subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '01'], 
+                          capture_output=True)
 
-        except Exception:
-            pass  # Keep it silent for performance
-                        
+        except Exception as e:
+            print(f"BLE send error: {e}")
+
 class MotorController:
     def __init__(self):
         self.current_speed = ROVER_SPEED
