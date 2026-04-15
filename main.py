@@ -85,61 +85,69 @@ class BLEBeacon:
             pass
 
     def broadcast(self, distance, speed, auto_mode, ir_list):
-        """Improved broadcast - much better compatibility with Bleak/BlueZ"""
+        """Broadcast sensor data as manufacturer-specific data"""
         if not self.running:
             return
 
         ir_bits = ''.join([str(x) for x in ir_list])
         data_str = f"D{distance}S{speed}M{1 if auto_mode else 0}I{ir_bits}"
-
+        
         if data_str == self.last_data:
             return
         self.last_data = data_str
 
-        adv_data = bytearray()
-
-        # Flags (must come first)
-        adv_data.extend([0x02, 0x01, 0x06])   # LE General Discoverable, BR/EDR Not Supported
-
-        # Local Name
-        name_bytes = DEVICE_NAME.encode('utf-8')
-        adv_data.extend([len(name_bytes) + 1, 0x09])
-        adv_data.extend(name_bytes)
-
-        # Manufacturer Specific Data
+        # Convert string to bytes
         data_bytes = data_str.encode('utf-8')
-        adv_data.extend([len(data_bytes) + 2, 0xFF, 0x4C, 0x00])  # Apple company ID
-        adv_data.extend(data_bytes)
-
-        # Set scan response (include name again)
+        
+        # Create manufacturer specific data
+        # Format: [Length][Type: 0xFF][Company ID (2 bytes)][Data]
+        # Using a custom company ID (0xFFFF is reserved for testing)
+        company_id = 0xFFFF  # Use this for testing, or get your own
+        
+        # Build the advertising packet
+        adv_data = bytearray()
+        
+        # Flags (required)
+        adv_data.extend([0x02, 0x01, 0x06])  # LE General Discoverable, BR/EDR Not Supported
+        
+        # Local Name (optional but helpful)
         name_bytes = DEVICE_NAME.encode('utf-8')
-        scan_rsp = [len(name_bytes)+1, 0x09] + list(name_bytes)
-
-        cmd = ['sudo', 'hcitool', 'cmd', '0x08', '0x0009', f'{len(scan_rsp):02x}']
-        cmd += [f'{b:02x}' for b in scan_rsp]
-
-        subprocess.run(' '.join(cmd), shell=True, capture_output=True)
-
-        # === CRITICAL: Calculate real length and pad correctly ===
-        real_length = len(adv_data)
+        adv_data.append(len(name_bytes) + 1)
+        adv_data.append(0x09)  # Complete Local Name
+        adv_data.extend(name_bytes)
+        
+        # Manufacturer Specific Data with custom ID
+        # Calculate total length: 2 bytes for company ID + data bytes
+        manuf_len = len(data_bytes) + 2
+        adv_data.append(manuf_len + 1)  # +1 for the type byte
+        adv_data.append(0xFF)  # Manufacturer Specific Data type
+        adv_data.extend([company_id & 0xFF, (company_id >> 8) & 0xFF])  # Company ID (little endian)
+        adv_data.extend(data_bytes)
+        
+        # Pad to 31 bytes as required
         while len(adv_data) < 31:
             adv_data.append(0x00)
-
+        
+        # Send the advertising packet
         try:
-            # Command with correct length byte
+            # Stop current advertising
+            subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], 
+                        capture_output=True)
+            
+            # Set advertising data
+            real_length = len(adv_data)
             cmd = ['sudo', 'hcitool', 'cmd', '0x08', '0x0008', f'{real_length:02x}']
             for b in adv_data:
                 cmd.append(f'{b:02x}')
-
             subprocess.run(' '.join(cmd), shell=True, capture_output=True)
-
-            # Enable advertising
+            
+            # Start advertising
             subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '01'], 
-                          capture_output=True)
-
+                        capture_output=True)
+            
         except Exception as e:
             print(f"BLE send error: {e}")
-
+            
 class MotorController:
     def __init__(self):
         self.current_speed = ROVER_SPEED
