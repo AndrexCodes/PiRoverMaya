@@ -335,7 +335,7 @@ class NavigationSystem:
                     # Show status
                     ir = self.detector.get_ir()
                     ir_str = ''.join(['X' if x else '.' for x in ir])
-                    print(f"\r📡 Dist:{dist:3d}cm IR:[{ir_str}] {action:5} Speed:{self.motors.current_speed}%", end='')
+                    print(f"\r📡 Dist:{int(dist):3d}cm IR:[{ir_str}] {action:5} Speed:{self.motors.current_speed}%", end='')
                     
                     # Execute action
                     if action == 'FWD':
