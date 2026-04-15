@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
 """
-PiRover with BLE Advertising using D-Bus
+PiRover with BLE Broadcasting using hcitool
 Run with: sudo python3 main.py
 """
 
 import RPi.GPIO as GPIO
 import time
-import threading
-import dbus
-import dbus.exceptions
-import dbus.mainloop.glib
-from gi.repository import GLib
+import subprocess
 import struct
 from collections import deque
 
@@ -31,276 +27,83 @@ OBSTACLE_THRESHOLD = 30
 CRITICAL_DISTANCE = 15
 TURN_DURATION = 0.8
 
-# BLE UUIDs
-SERVICE_UUID = "0000ffe0-0000-1000-8000-00805f9b34fb"
-CHARACTERISTIC_UUID = "0000ffe1-0000-1000-8000-00805f9b34fb"
-
-class BLEAdvertisement:
-    """BLE Advertisement using D-Bus"""
+class BLEBeacon:
+    """Simple BLE beacon using hcitool commands"""
     
     def __init__(self):
-        self.mainloop = None
-        self.adapter = None
-        self.advertisement = None
         self.running = False
+        self.last_data = ""
         
     def setup(self):
-        """Setup D-Bus for BLE advertising"""
+        """Initialize Bluetooth for advertising"""
         try:
-            dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
-            self.mainloop = GLib.MainLoop()
+            # Bring up Bluetooth interface
+            subprocess.run(['sudo', 'hciconfig', 'hci0', 'up'], capture_output=True)
+            subprocess.run(['sudo', 'hciconfig', 'hci0', 'name', DEVICE_NAME], capture_output=True)
+            subprocess.run(['sudo', 'hciconfig', 'hci0', 'piscan'], capture_output=True)
             
-            # Get system bus
-            bus = dbus.SystemBus()
+            # Stop any existing advertising
+            subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
             
-            # Get adapter
-            adapter_path = "/org/bluez/hci0"
-            adapter_obj = bus.get_object("org.bluez", adapter_path)
-            self.adapter = dbus.Interface(adapter_obj, "org.bluez.Adapter1")
-            
-            # Power on adapter
-            self.adapter.SetProperty("Powered", dbus.Boolean(True))
-            self.adapter.SetProperty("Discoverable", dbus.Boolean(True))
-            self.adapter.SetProperty("Alias", DEVICE_NAME)
-            
-            time.sleep(1)
-            
-            # Create advertisement
-            self.advertisement = self.create_advertisement(bus, adapter_path)
-            
-            # Register advertisement
-            self.register_advertisement(bus, self.advertisement)
-            
-            print(f"✅ BLE advertisement registered as '{DEVICE_NAME}'")
+            print(f"✅ BLE beacon ready on hci0 as '{DEVICE_NAME}'")
             return True
-            
         except Exception as e:
             print(f"⚠️ BLE setup error: {e}")
             return False
     
-    def create_advertisement(self, bus, path):
-        """Create advertisement object"""
-        advertisement_path = f"{path}/advertisement"
-        
-        advertisement = bus.get_object("org.bluez", advertisement_path)
-        if advertisement:
-            return advertisement
-            
-        # Create new advertisement
-        obj = bus.get_object("org.bluez", "/org/bluez")
-        
-        manager = dbus.Interface(obj, "org.bluez.LEAdvertisingManager1")
-        
-        # Advertisement properties
-        props = {
-            "Type": "peripheral",
-            "ServiceUUIDs": dbus.Array([SERVICE_UUID], signature='s'),
-            "Discoverable": dbus.Boolean(True),
-            "DiscoverableTimeout": dbus.UInt16(0),
-            "LocalName": DEVICE_NAME,
-        }
-        
-        # Register advertisement
-        manager.RegisterAdvertisement(advertisement_path, props, reply_handler=self.ad_reply, error_handler=self.ad_error)
-        
-        return advertisement
-    
-    def register_advertisement(self, bus, advertisement):
-        """Register advertisement with D-Bus"""
-        # Implementation depends on your BlueZ version
-        pass
-    
-    def update_data(self, distance, speed, auto_mode, ir_list):
-        """Update advertising data with sensor readings"""
+    def broadcast(self, distance, speed, auto_mode, ir_list):
+        """Broadcast sensor data"""
         if not self.running:
             return
         
-        # Create data packet
-        # Format: distance|speed|mode|ir_bits
+        # Create data string (keep it short)
+        # Format: D{dist}S{speed}M{mode}I{ir_bits}
         ir_bits = ''.join([str(x) for x in ir_list])
-        data_str = f"{distance},{speed},{'A' if auto_mode else 'M'},{ir_bits}"
+        data_str = f"D{distance}S{speed}M{1 if auto_mode else 0}I{ir_bits}"
         
-        # Add to manufacturer data
-        # This would require updating the advertisement via D-Bus
-        pass
-    
-    def ad_reply(self):
-        pass
-    
-    def ad_error(self, error):
-        print(f"Advertisement error: {error}")
-    
-    def start(self):
-        self.running = True
-        return self.setup()
-    
-    def stop(self):
-        self.running = False
-        if self.mainloop:
-            self.mainloop.quit()
-
-# SIMPLER WORKING SOLUTION - Use Python's BLE Library
-class SimpleBLEBeacon:
-    """Simple BLE beacon using pybluez"""
-    
-    def __init__(self):
-        self.running = False
-        
-    def setup(self):
-        """Setup BLE advertising using simple method"""
-        try:
-            import bluetooth._bluetooth as bluez
-            
-            # Open HCI socket
-            self.sock = bluez.hci_open_dev(0)
-            bluez.hci_le_set_scan_parameters(self.sock, 0x00, 0x0800, 0x0800, 0x00, 0x00)
-            
-            # Set advertising parameters
-            cmd = struct.pack("<HHBBBB", 0x0800, 0x0800, 0x00, 0x00, 0x00, 0x00)
-            bluez.hci_send_cmd(self.sock, 0x08, 0x0006, cmd)
-            
-            print("✅ Simple BLE beacon ready")
-            return True
-        except Exception as e:
-            print(f"⚠️ BLE error: {e}")
-            return False
-    
-    def broadcast(self, distance, speed, auto_mode, ir_list):
-        """Broadcast data as iBeacon"""
-        if not self.running:
+        # Only update if data changed
+        if data_str == self.last_data:
             return
+        self.last_data = data_str
         
-        try:
-            import bluetooth._bluetooth as bluez
-            
-            # Create iBeacon packet
-            # Proximity UUID: PiRover
-            uuid = [0x50, 0x69, 0x52, 0x6F, 0x76, 0x65, 0x72, 0x00]  # "PiRover"
-            
-            # Major = distance
-            major = distance & 0xFFFF
-            
-            # Minor = (speed << 8) | (auto_mode << 4) | ir_bits
-            ir_bits = (ir_list[0] << 3) | (ir_list[1] << 2) | (ir_list[2] << 1) | ir_list[3]
-            minor = (speed << 8) | (auto_mode << 4) | ir_bits
-            
-            # Measured power
-            power = 0xC5  # -59 dBm
-            
-            # Build advertising packet
-            adv_data = bytearray()
-            adv_data.append(0x02)  # Flags length
-            adv_data.append(0x01)  # Flags type
-            adv_data.append(0x06)  # LE General Discoverable
-            
-            # iBeacon prefix
-            adv_data.append(0x1A)  # Length
-            adv_data.append(0xFF)  # Manufacturer specific
-            adv_data.append(0x4C)  # Apple Company ID
+        # Build advertising packet
+        adv_data = bytearray()
+        
+        # Flags (2 bytes)
+        adv_data.append(0x02)  # Length
+        adv_data.append(0x01)  # Type: Flags
+        adv_data.append(0x06)  # LE General Discoverable
+        
+        # Local Name
+        name_bytes = DEVICE_NAME.encode('utf-8')
+        adv_data.append(len(name_bytes) + 1)
+        adv_data.append(0x09)  # Type: Complete Local Name
+        adv_data.extend(name_bytes)
+        
+        # Manufacturer Specific Data (sensor readings)
+        data_bytes = data_str.encode('utf-8')
+        adv_data.append(len(data_bytes) + 2)
+        adv_data.append(0xFF)  # Type: Manufacturer Specific
+        adv_data.append(0x4C)  # Company ID (Apple)
+        adv_data.append(0x00)
+        adv_data.extend(data_bytes)
+        
+        # Pad to 31 bytes
+        while len(adv_data) < 31:
             adv_data.append(0x00)
-            adv_data.append(0x02)  # iBeacon type
-            adv_data.append(0x15)  # iBeacon length
-            adv_data.extend(uuid)  # UUID
-            adv_data.extend(struct.pack('>H', major))
-            adv_data.extend(struct.pack('>H', minor))
-            adv_data.append(power)
-            
-            # Set advertising data
-            bluez.hci_send_cmd(self.sock, 0x08, 0x0008, adv_data)
-            
-            # Enable advertising
-            bluez.hci_send_cmd(self.sock, 0x08, 0x000a, struct.pack("B", 0x01))
-            
-        except Exception as e:
-            pass
-    
-    def start(self):
-        self.running = True
-        return self.setup()
-    
-    def stop(self):
-        self.running = False
-        try:
-            import bluetooth._bluetooth as bluez
-            bluez.hci_send_cmd(self.sock, 0x08, 0x000a, struct.pack("B", 0x00))
-        except:
-            pass
-
-# ULTIMATE SIMPLE SOLUTION - Use 'hciconfig' with pre-set advertising
-class WorkingBLEBeacon:
-    """Working BLE beacon using pre-configured advertising"""
-    
-    def __init__(self):
-        self.running = False
         
-    def setup(self):
-        """Setup BLE with a fixed advertising packet"""
+        # Send command to set advertising data
         try:
-            import subprocess
+            # Build command
+            cmd = ['sudo', 'hcitool', 'cmd', '0x08', '0x0008']
+            for byte in adv_data[:31]:
+                cmd.append(f'{byte:02x}')
             
-            # Stop any existing advertising
-            subprocess.run(['sudo', 'hciconfig', 'hci0', 'noLEadv'], capture_output=True)
-            subprocess.run(['sudo', 'hciconfig', 'hci0', 'up'], capture_output=True)
-            subprocess.run(['sudo', 'hciconfig', 'hci0', 'name', DEVICE_NAME], capture_output=True)
-            subprocess.run(['sudo', 'hciconfig', 'hci0', 'leadv'], capture_output=True)
-            
-            print(f"✅ BLE advertising configured for '{DEVICE_NAME}'")
-            return True
-        except Exception as e:
-            print(f"⚠️ BLE error: {e}")
-            return False
-    
-    def broadcast(self, distance, speed, auto_mode, ir_list):
-        """Update advertising packet (works with hcitool)"""
-        if not self.running:
-            return
-        
-        try:
-            import subprocess
-            
-            # Create simple data string
-            ir_str = ''.join([str(x) for x in ir_list])
-            data_str = f"PiRover:{distance},{speed},{auto_mode},{ir_str}"
-            
-            # Convert to hex
-            hex_data = ' '.join([f'{ord(c):02x}' for c in data_str[:20]])
-            
-            # Create full advertising packet
-            # Flags + Local Name + Manufacturer Data
-            adv_packet = []
-            
-            # Flags
-            adv_packet.append('02')
-            adv_packet.append('01')
-            adv_packet.append('06')
-            
-            # Local Name
-            name_hex = ' '.join([f'{ord(c):02x}' for c in DEVICE_NAME])
-            name_len = len(DEVICE_NAME) + 1
-            adv_packet.append(f'{name_len:02x}')
-            adv_packet.append('09')
-            adv_packet.extend(name_hex.split())
-            
-            # Manufacturer specific data
-            data_bytes = [f'{ord(c):02x}' for c in data_str[:18]]
-            if data_bytes:
-                adv_packet.append(f'{len(data_bytes)+2:02x}')
-                adv_packet.append('ff')
-                adv_packet.append('4c')
-                adv_packet.append('00')
-                adv_packet.extend(data_bytes)
-            
-            # Pad to 31 bytes
-            while len(adv_packet) < 31:
-                adv_packet.append('00')
-            
-            # Send command
-            cmd = ['sudo', 'hcitool', '-i', 'hci0', 'cmd', '0x08', '0x0008']
-            cmd.extend(adv_packet[:31])
+            # Execute command
             subprocess.run(' '.join(cmd), shell=True, capture_output=True)
             
             # Enable advertising
-            subprocess.run(['sudo', 'hcitool', '-i', 'hci0', 'cmd', '0x08', '0x000a', '01'], 
+            subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '01'], 
                           capture_output=True)
             
         except Exception as e:
@@ -312,10 +115,7 @@ class WorkingBLEBeacon:
     
     def stop(self):
         self.running = False
-        import subprocess
-        subprocess.run(['sudo', 'hcitool', '-i', 'hci0', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
-
-# ========== MAIN NAVIGATION SYSTEM ==========
+        subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
 
 class MotorController:
     def __init__(self):
@@ -460,7 +260,7 @@ class NavigationSystem:
     def __init__(self):
         self.motors = MotorController()
         self.detector = ObstacleDetector()
-        self.ble = WorkingBLEBeacon()  # Using the working version
+        self.ble = BLEBeacon()
         self.running = False
         self.auto_mode = True
     
