@@ -23,7 +23,7 @@ PINS = {
 }
 
 # ========== CONFIGURATION ==========
-DEVICE_NAME = 'PiRover'
+DEVICE_NAME = 'raspberrypi'
 ROVER_SPEED = 40
 OBSTACLE_THRESHOLD = 30
 CRITICAL_DISTANCE = 15
