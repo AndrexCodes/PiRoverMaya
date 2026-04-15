@@ -28,7 +28,7 @@ CRITICAL_DISTANCE = 15
 TURN_DURATION = 0.8
 
 class BLEBeacon:
-    """Simple BLE beacon using hcitool commands"""
+    """Simple BLE beacon using hcitool"""
     
     def __init__(self):
         self.running = False
@@ -37,20 +37,20 @@ class BLEBeacon:
     def setup(self):
         try:
             subprocess.run(['sudo', 'hciconfig', 'hci0', 'up'], capture_output=True)
-            # Reset advertising
+            # Set both controller name and advertising name
+            subprocess.run(['sudo', 'hciconfig', 'hci0', 'name', DEVICE_NAME], capture_output=True)
             subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
-            print(f"✅ BLE beacon ready on hci0 as '{DEVICE_NAME}'")
+            
+            print(f"✅ BLE beacon ready as '{DEVICE_NAME}'")
             return True
         except Exception as e:
             print(f"⚠️ BLE setup error: {e}")
             return False
-
+    
     def broadcast(self, distance, speed, auto_mode, ir_list):
-        """Broadcast sensor data"""
         if not self.running:
             return
 
-        # Create data string
         ir_bits = ''.join([str(x) for x in ir_list])
         data_str = f"D{distance}S{speed}M{1 if auto_mode else 0}I{ir_bits}"
 
@@ -58,13 +58,12 @@ class BLEBeacon:
             return
         self.last_data = data_str
 
-        # Build advertising data (AD structure)
         adv_data = bytearray()
 
         # Flags
         adv_data.extend([0x02, 0x01, 0x06])
 
-        # Local Name
+        # Complete Local Name
         name_bytes = DEVICE_NAME.encode('utf-8')
         adv_data.extend([len(name_bytes) + 1, 0x09])
         adv_data.extend(name_bytes)
@@ -74,33 +73,21 @@ class BLEBeacon:
         adv_data.extend([len(data_bytes) + 2, 0xFF, 0x4C, 0x00])
         adv_data.extend(data_bytes)
 
-        # Pad to 31 bytes max
+        # Pad to 31 bytes
         while len(adv_data) < 31:
             adv_data.append(0x00)
 
-        # === FIXED COMMAND ===
         try:
             cmd = ['sudo', 'hcitool', 'cmd', '0x08', '0x0008', f'{len(adv_data):02x}']
-            for byte in adv_data:
-                cmd.append(f'{byte:02x}')
-
-            subprocess.run(' '.join(cmd), shell=True, capture_output=True, check=False)
-
-            # Enable advertising
-            subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '01'],
-                          capture_output=True, check=False)
-
+            for b in adv_data:
+                cmd.append(f'{b:02x}')
+            
+            subprocess.run(' '.join(cmd), shell=True, capture_output=True)
+            subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '01'], capture_output=True)
+            
         except Exception as e:
-            print(f"BLE broadcast error: {e}")
-
-    def start(self):
-        self.running = True
-        return self.setup()
-    
-    def stop(self):
-        self.running = False
-        subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
-
+            pass  # Silent fail for performance
+            
 class MotorController:
     def __init__(self):
         self.current_speed = ROVER_SPEED

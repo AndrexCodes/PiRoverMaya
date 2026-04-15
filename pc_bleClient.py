@@ -1,19 +1,13 @@
 #!/usr/bin/env python3
 """
-Simple BLE Scanner - Prints all nearby BLE device payloads
-
-Installation:
-    pip install bleak
-
-Usage:
-    python ble_scanner.py
+PiRover BLE Scanner - Optimized for your custom beacon
 """
 
 import asyncio
 import json
 from pathlib import Path
-from bleak import BleakScanner
 from datetime import datetime
+from bleak import BleakScanner
 
 
 OUTPUT_FILE = Path("ble_devices.json")
@@ -21,111 +15,110 @@ device_store = {}
 
 
 def _load_existing_store():
-    """Load existing device store from JSON file if it exists."""
     global device_store
     if OUTPUT_FILE.exists():
         try:
-            with OUTPUT_FILE.open("r", encoding="utf-8") as file:
-                loaded = json.load(file)
+            with OUTPUT_FILE.open("r", encoding="utf-8") as f:
+                loaded = json.load(f)
                 if isinstance(loaded, dict):
                     device_store = loaded
-        except (json.JSONDecodeError, OSError):
+        except Exception:
             device_store = {}
 
 
 def _save_store():
-    """Persist current device store to JSON file."""
-    with OUTPUT_FILE.open("w", encoding="utf-8") as file:
-        json.dump(device_store, file, indent=2)
+    with OUTPUT_FILE.open("w", encoding="utf-8") as f:
+        json.dump(device_store, f, indent=2)
 
 
-def _build_payload(advertisement_data):
-    """Build serializable payload details from advertisement data."""
-    manufacturer_payload = {
-        f"0x{company_id:04x}": data.hex()
-        for company_id, data in advertisement_data.manufacturer_data.items()
-    }
-    service_payload = {
-        uuid: data.hex()
-        for uuid, data in advertisement_data.service_data.items()
-    }
+def decode_pirover_payload(data: bytes) -> str:
+    """Decode your custom DxxSxxMxxIxxxx payload"""
+    try:
+        text = data.decode('utf-8', errors='ignore')
+        if text.startswith('D'):
+            return text
+        return text
+    except:
+        return data.hex()
 
-    return {
-        "manufacturer_data": manufacturer_payload,
-        "service_data": service_payload,
-        "local_name": advertisement_data.local_name,
-        "service_uuids": advertisement_data.service_uuids,
-        "tx_power": advertisement_data.tx_power,
-    }
 
 def simple_callback(device, advertisement_data):
-    """Simple callback to print device data"""
-    
-    timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    
-    print(f"\n{'='*70}")
-    print(f"[{timestamp}] Device Found!")
-    print(f"{'='*70}")
-    print(f"📱 Name: {device.name if device.name else 'Unknown'}")
-    print(f"🔗 Address: {device.address}")
-    print(f"📶 RSSI: {advertisement_data.rssi} dBm")
 
+    """Enhanced callback focused on PiRover"""
+    timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+
+    # Filter to show only relevant devices
+    name = device.name or "Unknown"
+    if "PiRover" not in name and "pirov" not in name.lower():
+        return  # Optional: remove this line if you want ALL devices
+
+    print(f"\n{'='*80}")
+    print(f"[{timestamp}] 🛠️  PiRover DETECTED!")
+    print(f"{'='*80}")
+    print(f"📱 Name       : {device.name}")
+    print(f"🔗 Address    : {device.address}")
+    print(f"📶 RSSI       : {advertisement_data.rssi} dBm")
+
+    # Save to JSON
     device_store[device.address] = {
-        "name": device.name if device.name else "Unknown",
+        "name": device.name,
         "address": device.address,
         "rssi": advertisement_data.rssi,
-        "payload": _build_payload(advertisement_data),
+        "payload": {
+            "manufacturer_data": {
+                f"0x{cid:04x}": data.hex() 
+                for cid, data in advertisement_data.manufacturer_data.items()
+            },
+            "local_name": advertisement_data.local_name,
+            "service_data": {
+                str(uuid): data.hex() 
+                for uuid, data in advertisement_data.service_data.items()
+            }
+        },
         "last_seen": timestamp,
     }
     _save_store()
-    
-    # Print manufacturer data
+
+    # === Manufacturer Data (Most Important for PiRover) ===
     if advertisement_data.manufacturer_data:
         print(f"\n📦 Manufacturer Data:")
         for company_id, data in advertisement_data.manufacturer_data.items():
-            print(f"   Company ID: 0x{company_id:04x}")
-            print(f"   Data (hex): {data.hex()}")
-            print(f"   Data (str): {data.decode('utf-8', errors='ignore')}")
-    
-    # Print service data
+            print(f"   Company ID : 0x{company_id:04x}")
+            print(f"   Raw Hex    : {data.hex()}")
+            decoded = decode_pirover_payload(data)
+            print(f"   Decoded    : {decoded}")
+
+    # Local Name
+    if advertisement_data.local_name:
+        print(f"🏷️  Local Name : {advertisement_data.local_name}")
+
+    # Service Data (if any)
     if advertisement_data.service_data:
         print(f"\n🔧 Service Data:")
         for uuid, data in advertisement_data.service_data.items():
-            print(f"   UUID: {uuid}")
-            print(f"   Data (hex): {data.hex()}")
-            print(f"   Data (str): {data.decode('utf-8', errors='ignore')}")
-    
-    # Print local name (if in advertisement)
-    if advertisement_data.local_name:
-        print(f"\n🏷️  Local Name: {advertisement_data.local_name}")
-    
-    # Print service UUIDs
-    if advertisement_data.service_uuids:
-        print(f"\n📋 Service UUIDs:")
-        for uuid in advertisement_data.service_uuids:
-            print(f"   - {uuid}")
-    
-    # Print tx power
-    if advertisement_data.tx_power is not None:
-        print(f"\n⚡ TX Power: {advertisement_data.tx_power} dBm")
-    
-    print(f"{'='*70}\n")
+            print(f"   UUID : {uuid}")
+            print(f"   Data : {data.hex()}")
+
+    print(f"{'='*80}\n")
+
 
 async def scan():
-    """Start scanning for BLE devices"""
     _load_existing_store()
-    print("🔍 Scanning for BLE devices...")
+    print("🔍 Starting PiRover BLE Scanner...")
+    print("Looking for 'PiRover' beacon with custom payload...\n")
     print("Press Ctrl+C to stop\n")
-    
+
     scanner = BleakScanner(detection_callback=simple_callback)
-    
+
     try:
         await scanner.start()
-        await asyncio.sleep(3600)  # Scan for 1 hour (or until Ctrl+C)
+        await asyncio.sleep(3600)   # Run for 1 hour
     except KeyboardInterrupt:
-        print("\n🛑 Stopping scan...")
+        print("\n🛑 Stopping scanner...")
     finally:
         await scanner.stop()
+        print("✅ Scan stopped.")
+
 
 if __name__ == "__main__":
     asyncio.run(scan())
