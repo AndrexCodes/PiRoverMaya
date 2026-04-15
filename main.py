@@ -28,26 +28,45 @@ CRITICAL_DISTANCE = 15
 TURN_DURATION = 0.8
 
 class BLEBeacon:
-    """Simple BLE beacon using hcitool"""
+    """Simple BLE beacon using hcitool - Fixed version"""
     
     def __init__(self):
         self.running = False
         self.last_data = ""
         
     def setup(self):
+        """Initialize Bluetooth"""
         try:
+            # Bring up Bluetooth
             subprocess.run(['sudo', 'hciconfig', 'hci0', 'up'], capture_output=True)
-            # Set both controller name and advertising name
+            
+            # Set device name so both system scanner and LE apps show "PiRover"
             subprocess.run(['sudo', 'hciconfig', 'hci0', 'name', DEVICE_NAME], capture_output=True)
+            
+            # Stop any existing advertising
             subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
             
-            print(f"✅ BLE beacon ready as '{DEVICE_NAME}'")
+            print(f"✅ BLE beacon ready on hci0 as '{DEVICE_NAME}'")
             return True
         except Exception as e:
             print(f"⚠️ BLE setup error: {e}")
             return False
     
+    def start(self):
+        """Start the beacon"""
+        self.running = True
+        return self.setup()
+    
+    def stop(self):
+        """Stop advertising"""
+        self.running = False
+        try:
+            subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
+        except:
+            pass
+
     def broadcast(self, distance, speed, auto_mode, ir_list):
+        """Broadcast sensor data"""
         if not self.running:
             return
 
@@ -63,12 +82,12 @@ class BLEBeacon:
         # Flags
         adv_data.extend([0x02, 0x01, 0x06])
 
-        # Complete Local Name
+        # Complete Local Name → This makes "PiRover" visible everywhere
         name_bytes = DEVICE_NAME.encode('utf-8')
         adv_data.extend([len(name_bytes) + 1, 0x09])
         adv_data.extend(name_bytes)
 
-        # Manufacturer Specific Data
+        # Manufacturer Specific Data (your sensor payload)
         data_bytes = data_str.encode('utf-8')
         adv_data.extend([len(data_bytes) + 2, 0xFF, 0x4C, 0x00])
         adv_data.extend(data_bytes)
@@ -78,16 +97,19 @@ class BLEBeacon:
             adv_data.append(0x00)
 
         try:
+            # Send advertising data
             cmd = ['sudo', 'hcitool', 'cmd', '0x08', '0x0008', f'{len(adv_data):02x}']
             for b in adv_data:
                 cmd.append(f'{b:02x}')
             
             subprocess.run(' '.join(cmd), shell=True, capture_output=True)
+
+            # Enable advertising
             subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '01'], capture_output=True)
-            
-        except Exception as e:
-            pass  # Silent fail for performance
-            
+
+        except Exception:
+            pass  # Keep it silent for performance
+                        
 class MotorController:
     def __init__(self):
         self.current_speed = ROVER_SPEED
