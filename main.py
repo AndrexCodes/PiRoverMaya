@@ -72,7 +72,7 @@ class BLEBeacon:
         except:
             pass
 
-        def broadcast(self, distance, speed, auto_mode, ir_list):
+    def broadcast(self, distance, speed, auto_mode, ir_list):
         """Improved broadcast - much better compatibility with Bleak/BlueZ"""
         if not self.running:
             return
