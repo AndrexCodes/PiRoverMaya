@@ -30,49 +30,20 @@ CRITICAL_DISTANCE = 15
 TURN_DURATION = 0.8
 
 class BLEBeacon:
-    """Broadcasts BLE beacon with sensor data using bluetoothctl"""
+    """Broadcasts BLE beacon with sensor data using hcitool"""
     
     def __init__(self):
         self.running = False
-        self.process = None
         self.current_data = ""
+        self.hci_device = 'hci0'
         
     def setup(self):
         """Setup Bluetooth for beacon broadcasting"""
         try:
-            # Kill any existing bluetoothctl processes
-            subprocess.run(['sudo', 'killall', 'bluetoothctl'], stderr=subprocess.DEVNULL)
-            time.sleep(1)
-            
-            # Start bluetoothctl process
-            self.process = subprocess.Popen(
-                ['bluetoothctl'],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                text=True
-            )
-            
+            # Enable Bluetooth and set as discoverable
+            subprocess.run(['sudo', 'hciconfig', self.hci_device, 'up'], check=True)
+            subprocess.run(['sudo', 'hciconfig', self.hci_device, 'piscan'], check=True)
             time.sleep(0.5)
-            
-            # Send commands to configure advertising
-            commands = [
-                'power on',
-                'discoverable on',
-                'pairable off',
-                f' advertise on',
-                f'advertise name {DEVICE_NAME}',
-                f'advertise uuid 0000ffe0-0000-1000-8000-00805f9b34fb',
-                'advertise service 0000ffe0-0000-1000-8000-00805f9b34fb',
-                'advertise data 02 01 06',
-                'advertise interval 200',
-            ]
-            
-            for cmd in commands:
-                if self.process and self.process.stdin:
-                    self.process.stdin.write(cmd + '\n')
-                    self.process.stdin.flush()
-                    time.sleep(0.1)
             
             print(f"✅ BLE beacon ready - Advertising as '{DEVICE_NAME}'")
             return True
@@ -82,30 +53,31 @@ class BLEBeacon:
             return False
     
     def broadcast(self, distance, speed, auto_mode, ir_list):
-        """Broadcast sensor data as BLE manufacturer data"""
-        if not self.running or not self.process:
+        """Broadcast sensor data as BLE manufacturer data using hcitool"""
+        if not self.running:
             return
         
         # Create data string
-        # Format: PiRover:dist=45,speed=40,mode=auto,ir=1010
         ir_bits = ''.join([str(x) for x in ir_list])
-        data_str = f"PiRover:d={distance},s={speed},m={'A' if auto_mode else 'M'},ir={ir_bits}"
+        data_str = f"d={distance},s={speed},m={'A' if auto_mode else 'M'},ir={ir_bits}"
         
         # Only update if data changed (reduce writes)
         if data_str == self.current_data:
             return
         self.current_data = data_str
         
-        # Convert to hex for manufacturer data
-        hex_data = ' '.join([f'{ord(c):02x}' for c in data_str[:25]])
+        # Convert to hex for manufacturer data (Apple MFG ID: 0x004c)
+        hex_data = ''.join([f'{ord(c):02x}' for c in data_str[:20]])
         
         try:
-            # Update advertising data with manufacturer specific data
-            cmd = f'advertise data 1b ff 4c 00 {hex_data}'
-            if self.process and self.process.stdin:
-                self.process.stdin.write(cmd + '\n')
-                self.process.stdin.flush()
-        except:
+            # Build advertisement data: length(1) + type(1) + mfg_id(2 LE) + data
+            ad_data = f'1b ff 4c 00 {" ".join([hex_data[i:i+2] for i in range(0, len(hex_data), 2)])}'
+            
+            # Use hcitool to set advertisement data
+            cmd = f"sudo hcitool -i {self.hci_device} cmd 0x08 0x0008 " + ad_data.replace(' ', ' ')
+            subprocess.run(cmd, shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+            
+        except Exception as e:
             pass
     
     def start(self):
@@ -114,16 +86,10 @@ class BLEBeacon:
     
     def stop(self):
         self.running = False
-        if self.process:
-            try:
-                if self.process.stdin:
-                    self.process.stdin.write('advertise off\n')
-                    self.process.stdin.write('quit\n')
-                    self.process.stdin.flush()
-                self.process.terminate()
-            except:
-                pass
-            self.process = None
+        try:
+            subprocess.run(['sudo', 'hciconfig', self.hci_device, 'noscan'], stderr=subprocess.DEVNULL)
+        except:
+            pass
 
 class MotorController:
     def __init__(self):
