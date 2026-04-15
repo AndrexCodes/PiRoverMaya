@@ -696,8 +696,9 @@ class NavigationSystem:
                     ir_str += 'R' if ir['TR'] else '.'
                     ir_str += 'l' if ir['BL'] else '.'
                     ir_str += 'r' if ir['BR'] else '.'
+                    dist_display = int(round(dist))
                     
-                    print(f"\r📍 Dist:{dist:3d}cm IR:[{ir_str}] {action:6} Speed:{speed}%", end='', flush=True)
+                    print(f"\r📍 Dist:{dist_display:3d}cm IR:[{ir_str}] {action:6} Speed:{speed}%", end='', flush=True)
                     
                     # Execute action
                     if action == 'FWD':
