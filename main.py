@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PiRover with BLE Broadcasting using hcitool
+PiRover with BLE Broadcasting including DHT11 and MQ135
 Run with: sudo python3 main.py
 """
 
@@ -9,6 +9,15 @@ import time
 import subprocess
 import struct
 from collections import deque
+import threading
+
+# Try to import DHT11 library
+try:
+    import Adafruit_DHT
+    DHT_AVAILABLE = True
+except ImportError:
+    DHT_AVAILABLE = False
+    print("⚠️ Adafruit_DHT not installed. DHT11 disabled.")
 
 # ========== PIN CONFIGURATION ==========
 PINS = {
@@ -17,7 +26,9 @@ PINS = {
     'ULTRASONIC_TRIG': 5, 'ULTRASONIC_ECHO': 6,
     'IR_TOP_LEFT': 26, 'IR_TOP_RIGHT': 20,
     'IR_BOTTOM_LEFT': 21, 'IR_BOTTOM_RIGHT': 16,
-    'LED1': 24, 'LED2': 25, 'LED3': 8, 'BUZZER': 27
+    'LED1': 24, 'LED2': 25, 'LED3': 8, 'BUZZER': 27,
+    'DHT11': 4,      # Add DHT11 pin
+    'MQ135': 7       # Add MQ135 pin
 }
 
 # ========== CONFIGURATION ==========
@@ -26,9 +37,9 @@ ROVER_SPEED = 40
 OBSTACLE_THRESHOLD = 30
 CRITICAL_DISTANCE = 15
 TURN_DURATION = 0.8
+SENSOR_UPDATE_INTERVAL = 2  # Update DHT/MQ135 every 2 seconds
 
 class BLEBeacon:
-
     """Simple BLE beacon using hcitool - Fixed version"""
     
     def __init__(self):
@@ -36,14 +47,12 @@ class BLEBeacon:
         self.last_data = ""
         
     def setup(self):
-
         """Initialize Bluetooth"""
         try:
-
             # Bring up Bluetooth
             subprocess.run(['sudo', 'hciconfig', 'hci0', 'up'], capture_output=True)
             
-            # Set device name so both system scanner and LE apps show "PiRover"
+            # Set device name
             subprocess.run(['sudo', 'hciconfig', 'hci0', 'name', DEVICE_NAME], capture_output=True)
             
             # Stop any existing advertising
@@ -84,13 +93,14 @@ class BLEBeacon:
         except:
             pass
 
-    def broadcast(self, distance, speed, auto_mode, ir_list):
+    def broadcast(self, distance, speed, auto_mode, ir_list, temperature, humidity, gas_detected):
         """Broadcast sensor data as manufacturer-specific data"""
         if not self.running:
             return
 
+        # Enhanced data format: D{distance}S{speed}M{mode}I{ir_bits}T{temp}H{humidity}G{gas}
         ir_bits = ''.join([str(x) for x in ir_list])
-        data_str = f"D{distance}S{speed}M{1 if auto_mode else 0}I{ir_bits}"
+        data_str = f"D{distance}S{speed}M{1 if auto_mode else 0}I{ir_bits}T{temperature:.1f}H{humidity:.1f}G{1 if gas_detected else 0}"
         
         if data_str == self.last_data:
             return
@@ -100,9 +110,7 @@ class BLEBeacon:
         data_bytes = data_str.encode('utf-8')
         
         # Create manufacturer specific data
-        # Format: [Length][Type: 0xFF][Company ID (2 bytes)][Data]
-        # Using a custom company ID (0xFFFF is reserved for testing)
-        company_id = 0xFFFF  # Use this for testing, or get your own
+        company_id = 0xFFFF  # Use this for testing
         
         # Build the advertising packet
         adv_data = bytearray()
@@ -117,7 +125,6 @@ class BLEBeacon:
         adv_data.extend(name_bytes)
         
         # Manufacturer Specific Data with custom ID
-        # Calculate total length: 2 bytes for company ID + data bytes
         manuf_len = len(data_bytes) + 2
         adv_data.append(manuf_len + 1)  # +1 for the type byte
         adv_data.append(0xFF)  # Manufacturer Specific Data type
@@ -147,7 +154,78 @@ class BLEBeacon:
             
         except Exception as e:
             print(f"BLE send error: {e}")
+
+class EnvironmentSensor:
+    """Handle DHT11 and MQ135 sensors"""
+    
+    def __init__(self):
+        self.temperature = 0.0
+        self.humidity = 0.0
+        self.gas_detected = False
+        self.last_update = 0
+        
+    def setup(self):
+        """Setup environment sensors"""
+        if DHT_AVAILABLE:
+            print("✅ DHT11 sensor ready")
+        else:
+            print("⚠️ DHT11 unavailable - install Adafruit_DHT")
+        
+        GPIO.setup(PINS['MQ135'], GPIO.IN)
+        print("✅ MQ135 gas sensor ready")
+    
+    def read_dht11(self):
+        """Read DHT11 sensor"""
+        if not DHT_AVAILABLE:
+            return None, None
+        
+        try:
+            humidity, temperature = Adafruit_DHT.read_retry(
+                Adafruit_DHT.DHT11, 
+                PINS['DHT11']
+            )
             
+            if humidity is not None and temperature is not None:
+                return temperature, humidity
+            else:
+                return None, None
+        except Exception as e:
+            print(f"DHT11 read error: {e}")
+            return None, None
+    
+    def read_mq135(self):
+        """Read MQ135 gas sensor (digital output)"""
+        try:
+            # Digital output: 0 = gas detected, 1 = normal
+            gas_status = GPIO.input(PINS['MQ135'])
+            return gas_status == 0  # True if gas detected
+        except Exception as e:
+            print(f"MQ135 read error: {e}")
+            return False
+    
+    def update(self):
+        """Update all environment sensors"""
+        current_time = time.time()
+        
+        # Only update every SENSOR_UPDATE_INTERVAL seconds
+        if current_time - self.last_update >= SENSOR_UPDATE_INTERVAL:
+            # Read DHT11
+            temp, hum = self.read_dht11()
+            if temp is not None and hum is not None:
+                self.temperature = temp
+                self.humidity = hum
+            
+            # Read MQ135
+            self.gas_detected = self.read_mq135()
+            
+            self.last_update = current_time
+            
+            # Print status occasionally
+            if self.gas_detected:
+                print(f"\n⚠️ GAS DETECTED! Temp: {self.temperature:.1f}°C Hum: {self.humidity:.1f}%")
+        
+        return self.temperature, self.humidity, self.gas_detected
+
 class MotorController:
     def __init__(self):
         self.current_speed = ROVER_SPEED
@@ -237,7 +315,7 @@ class ObstacleDetector:
                    PINS['IR_BOTTOM_LEFT'], PINS['IR_BOTTOM_RIGHT']]
         for pin in ir_pins:
             GPIO.setup(pin, GPIO.IN)
-        print("✅ Sensors ready")
+        print("✅ Obstacle sensors ready")
     
     def get_distance(self):
         try:
@@ -291,6 +369,7 @@ class NavigationSystem:
     def __init__(self):
         self.motors = MotorController()
         self.detector = ObstacleDetector()
+        self.environment = EnvironmentSensor()
         self.ble = BLEBeacon()
         self.running = False
         self.auto_mode = True
@@ -310,6 +389,7 @@ class NavigationSystem:
         print("\n" + "="*50)
         print("   PiRover Navigation System")
         print("   BLE Beacon Broadcasting")
+        print("   with DHT11 & MQ135")
         print("="*50)
         
         GPIO.setmode(GPIO.BCM)
@@ -323,6 +403,7 @@ class NavigationSystem:
         # Initialize hardware
         self.motors.setup()
         self.detector.setup()
+        self.environment.setup()
         
         # Ready signal
         self.beep(0.2)
@@ -332,7 +413,10 @@ class NavigationSystem:
         print(f"\n✅ System Ready! (Speed: {ROVER_SPEED}%)")
         print(f"🤖 Mode: AUTO (default)")
         print(f"📡 BLE Beacon: {DEVICE_NAME}")
-        print("   Broadcasting sensor data every 0.2s")
+        print("   Broadcasting sensor data including:")
+        print("   - Distance & IR sensors")
+        print("   - Temperature & Humidity (DHT11)")
+        print("   - Gas detection (MQ135)")
         print("\nPress Ctrl+C to stop\n")
         
         return True
@@ -346,11 +430,15 @@ class NavigationSystem:
         ir = self.detector.get_ir()
         speed = self.motors.current_speed
         
-        self.ble.broadcast(distance, speed, self.auto_mode, ir)
+        # Get environment data
+        temp, hum, gas = self.environment.update()
+        
+        self.ble.broadcast(distance, speed, self.auto_mode, ir, temp, hum, gas)
     
     def run(self):
         self.running = True
         last_broadcast = time.time()
+        last_env_print = time.time()
         
         try:
             while self.running:
@@ -360,7 +448,18 @@ class NavigationSystem:
                     
                     ir = self.detector.get_ir()
                     ir_str = ''.join(['X' if x else '.' for x in ir])
-                    print(f"\r📡 Dist:{int(dist):3d}cm IR:[{ir_str}] {action:5} Speed:{self.motors.current_speed}%", end='')
+                    
+                    # Get environment data for display
+                    temp, hum, gas = self.environment.update()
+                    
+                    # Display status with environment data
+                    gas_marker = "⚠️GAS! " if gas else ""
+                    print(f"\r{gas_marker}📡 Dist:{int(dist):3d}cm IR:[{ir_str}] {action:5} Speed:{self.motors.current_speed}% T:{temp:.1f}°C H:{hum:.1f}%", end='')
+                    
+                    # Gas alert
+                    if gas and time.time() - last_env_print > 5:
+                        self.beep(0.3)
+                        last_env_print = time.time()
                     
                     if action == 'FWD':
                         self.motors.forward()

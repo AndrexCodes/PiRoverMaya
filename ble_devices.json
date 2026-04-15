@@ -2,8 +2,23 @@
   "B8:27:EB:89:C1:AA": {
     "name": "PiRover",
     "address": "B8:27:EB:89:C1:AA",
-    "rssi": -69,
-    "payload": "",
-    "last_seen": "11:47:13"
+    "rssi": -127,
+    "payload": "D214S40M1I1111",
+    "last_seen": "12:05:46",
+    "parsed_data": {
+      "distance_cm": 214,
+      "speed_percent": 40,
+      "mode": "AUTO",
+      "mode_raw": 1,
+      "ir_sensors": {
+        "top_left": 1,
+        "top_right": 1,
+        "bottom_left": 1,
+        "bottom_right": 1
+      },
+      "ir_raw": "1111",
+      "obstacle_detected": false,
+      "critical_distance": false
+    }
   }
 }
