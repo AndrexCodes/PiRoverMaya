@@ -3,25 +3,25 @@
     "name": "PiRover",
     "address": "B8:27:EB:89:C1:AA",
     "rssi": -127,
-    "payload": "D67S40M1I1101",
-    "last_seen": "12:46:43",
+    "payload": "D13S40M1I1010",
+    "last_seen": "15:07:37",
     "parsed_data": {
-      "distance_cm": 67,
+      "distance_cm": 13,
       "speed_percent": 40,
       "mode": "AUTO",
       "mode_raw": 1,
       "ir_sensors": {
         "top_left": 1,
-        "top_right": 1,
-        "bottom_left": 0,
-        "bottom_right": 1
+        "top_right": 0,
+        "bottom_left": 1,
+        "bottom_right": 0
       },
-      "ir_raw": "1101",
-      "temperature": 24.7,
-      "humidity": 70.8,
+      "ir_raw": "1010",
+      "temperature": 22.0,
+      "humidity": 57.9,
       "gas_detected": false,
-      "obstacle_detected": false,
-      "critical_distance": false
+      "obstacle_detected": true,
+      "critical_distance": true
     }
   }
 }
