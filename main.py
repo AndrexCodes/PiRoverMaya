@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-PiRover with Proper BLE Broadcasting
+PiRover with Proper BLE Broadcasting using bluetoothctl
 Run with: sudo python3 main.py
 """
 
 import RPi.GPIO as GPIO
 import time
-import math
+import subprocess
 import threading
 import json
-import subprocess
-import struct
+import os
 from collections import deque
 
 # ========== PIN CONFIGURATION ==========
@@ -31,83 +30,82 @@ CRITICAL_DISTANCE = 15
 TURN_DURATION = 0.8
 
 class BLEBeacon:
-    """Broadcasts BLE beacon with sensor data"""
+    """Broadcasts BLE beacon with sensor data using bluetoothctl"""
     
     def __init__(self):
         self.running = False
-        self.bt_interface = "hci0"
+        self.process = None
+        self.current_data = ""
         
     def setup(self):
         """Setup Bluetooth for beacon broadcasting"""
         try:
-            # Bring up interface
-            subprocess.run(['sudo', 'hciconfig', self.bt_interface, 'up'], capture_output=True)
-            subprocess.run(['sudo', 'hciconfig', self.bt_interface, 'leadv', '3'], capture_output=True)
+            # Kill any existing bluetoothctl processes
+            subprocess.run(['sudo', 'killall', 'bluetoothctl'], stderr=subprocess.DEVNULL)
+            time.sleep(1)
             
-            # Set device name
-            subprocess.run(['sudo', 'hciconfig', self.bt_interface, 'name', DEVICE_NAME], capture_output=True)
+            # Start bluetoothctl process
+            self.process = subprocess.Popen(
+                ['bluetoothctl'],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True
+            )
             
-            # Reset advertising
-            subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
+            time.sleep(0.5)
             
-            print(f"✅ BLE beacon ready on {self.bt_interface}")
+            # Send commands to configure advertising
+            commands = [
+                'power on',
+                'discoverable on',
+                'pairable off',
+                f' advertise on',
+                f'advertise name {DEVICE_NAME}',
+                f'advertise uuid 0000ffe0-0000-1000-8000-00805f9b34fb',
+                'advertise service 0000ffe0-0000-1000-8000-00805f9b34fb',
+                'advertise data 02 01 06',
+                'advertise interval 200',
+            ]
+            
+            for cmd in commands:
+                if self.process and self.process.stdin:
+                    self.process.stdin.write(cmd + '\n')
+                    self.process.stdin.flush()
+                    time.sleep(0.1)
+            
+            print(f"✅ BLE beacon ready - Advertising as '{DEVICE_NAME}'")
             return True
+            
         except Exception as e:
             print(f"⚠️ BLE setup error: {e}")
             return False
     
     def broadcast(self, distance, speed, auto_mode, ir_list):
-        """Broadcast sensor data as BLE beacon"""
-        if not self.running:
+        """Broadcast sensor data as BLE manufacturer data"""
+        if not self.running or not self.process:
             return
         
-        # Create simple data packet as JSON-like string
-        # Format: {d:45,s:40,m:1,i:1010}
-        # Where i is 4 bits for IR sensors (TL,TR,BL,BR)
-        ir_bits = 0
-        if ir_list[0]: ir_bits |= 1  # TL
-        if ir_list[1]: ir_bits |= 2  # TR  
-        if ir_list[2]: ir_bits |= 4  # BL
-        if ir_list[3]: ir_bits |= 8  # BR
+        # Create data string
+        # Format: PiRover:dist=45,speed=40,mode=auto,ir=1010
+        ir_bits = ''.join([str(x) for x in ir_list])
+        data_str = f"PiRover:d={distance},s={speed},m={'A' if auto_mode else 'M'},ir={ir_bits}"
         
-        # Create compact data string
-        data_str = f"d:{distance},s:{speed},m:{1 if auto_mode else 0},i:{ir_bits}"
-        data_bytes = data_str.encode('utf-8')[:25]  # Max 25 bytes
+        # Only update if data changed (reduce writes)
+        if data_str == self.current_data:
+            return
+        self.current_data = data_str
         
-        # Build advertising packet
-        adv_data = bytearray()
-        adv_data.append(0x02)  # Flags length
-        adv_data.append(0x01)  # Flags type
-        adv_data.append(0x06)  # LE General Discoverable
+        # Convert to hex for manufacturer data
+        hex_data = ' '.join([f'{ord(c):02x}' for c in data_str[:25]])
         
-        # Add local name
-        name_bytes = DEVICE_NAME.encode('utf-8')
-        adv_data.append(len(name_bytes) + 1)
-        adv_data.append(0x09)  # Complete Local Name
-        adv_data.extend(name_bytes)
-        
-        # Add manufacturer specific data with sensor readings
-        adv_data.append(len(data_bytes) + 2)
-        adv_data.append(0xFF)  # Manufacturer specific
-        adv_data.append(0x4C)  # Company ID (Apple)
-        adv_data.append(0x00)
-        adv_data.extend(data_bytes)
-        
-        # Pad to 31 bytes
-        while len(adv_data) < 31:
-            adv_data.append(0x00)
-        
-        # Send via hcitool
         try:
-            cmd = ['sudo', 'hcitool', '-i', self.bt_interface, 'cmd', '0x08', '0x0008']
-            for byte in adv_data[:31]:
-                cmd.append(f'{byte:02x}')
-            subprocess.run(' '.join(cmd), shell=True, capture_output=True)
-            
-            # Enable advertising
-            subprocess.run(['sudo', 'hcitool', '-i', self.bt_interface, 'cmd', '0x08', '0x000a', '01'], 
-                          capture_output=True)
-        except Exception as e:
+            # Update advertising data with manufacturer specific data
+            cmd = f'advertise data 1b ff 4c 00 {hex_data}'
+            if self.process and self.process.stdin:
+                self.process.stdin.write(cmd + '\n')
+                self.process.stdin.flush()
+        except:
             pass
     
     def start(self):
@@ -116,7 +114,16 @@ class BLEBeacon:
     
     def stop(self):
         self.running = False
-        subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
+        if self.process:
+            try:
+                if self.process.stdin:
+                    self.process.stdin.write('advertise off\n')
+                    self.process.stdin.write('quit\n')
+                    self.process.stdin.flush()
+                self.process.terminate()
+            except:
+                pass
+            self.process = None
 
 class MotorController:
     def __init__(self):
@@ -237,10 +244,10 @@ class ObstacleDetector:
     
     def get_ir(self):
         return [
-            1 if GPIO.input(PINS['IR_TOP_LEFT']) == 0 else 0,    # TL
-            1 if GPIO.input(PINS['IR_TOP_RIGHT']) == 0 else 0,   # TR
-            1 if GPIO.input(PINS['IR_BOTTOM_LEFT']) == 0 else 0, # BL
-            1 if GPIO.input(PINS['IR_BOTTOM_RIGHT']) == 0 else 0 # BR
+            1 if GPIO.input(PINS['IR_TOP_LEFT']) == 0 else 0,
+            1 if GPIO.input(PINS['IR_TOP_RIGHT']) == 0 else 0,
+            1 if GPIO.input(PINS['IR_BOTTOM_LEFT']) == 0 else 0,
+            1 if GPIO.input(PINS['IR_BOTTOM_RIGHT']) == 0 else 0
         ]
     
     def analyze(self):
@@ -250,9 +257,9 @@ class ObstacleDetector:
         if dist < CRITICAL_DISTANCE:
             return 'BACK'
         if dist < OBSTACLE_THRESHOLD:
-            if ir[0] == 0:  # Top-Left clear
+            if ir[0] == 0:
                 return 'LEFT'
-            if ir[1] == 0:  # Top-Right clear
+            if ir[1] == 0:
                 return 'RIGHT'
             return 'TURN'
         return 'FWD'
@@ -263,8 +270,7 @@ class NavigationSystem:
         self.detector = ObstacleDetector()
         self.ble = BLEBeacon()
         self.running = False
-        self.auto_mode = True  # Default AUTO
-        self.last_broadcast = 0
+        self.auto_mode = True
     
     def setup_indicators(self):
         for pin in [PINS['LED1'], PINS['LED2'], PINS['LED3']]:
@@ -313,12 +319,10 @@ class NavigationSystem:
         if not self.ble.running:
             return
         
-        # Get current data
         distance = int(self.detector.distance) if self.detector.distance < 999 else 999
         ir = self.detector.get_ir()
         speed = self.motors.current_speed
         
-        # Broadcast with correct parameter order: (distance, speed, auto_mode, ir_list)
         self.ble.broadcast(distance, speed, self.auto_mode, ir)
     
     def run(self):
@@ -327,17 +331,14 @@ class NavigationSystem:
         
         try:
             while self.running:
-                # Auto navigation
                 if self.auto_mode:
                     dist = self.detector.get_distance()
                     action = self.detector.analyze()
                     
-                    # Show status
                     ir = self.detector.get_ir()
                     ir_str = ''.join(['X' if x else '.' for x in ir])
                     print(f"\r📡 Dist:{int(dist):3d}cm IR:[{ir_str}] {action:5} Speed:{self.motors.current_speed}%", end='')
                     
-                    # Execute action
                     if action == 'FWD':
                         self.motors.forward()
                     elif action == 'LEFT':
@@ -366,7 +367,7 @@ class NavigationSystem:
                         time.sleep(TURN_DURATION * 1.5)
                         self.motors.stop()
                 
-                # Broadcast sensor data via BLE (5 times per second)
+                # Broadcast every 0.2 seconds
                 if time.time() - last_broadcast >= 0.2:
                     self.broadcast_sensor_data()
                     last_broadcast = time.time()
