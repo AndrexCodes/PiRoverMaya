@@ -196,8 +196,65 @@ TURN_DURATION = 0.8
 #         except:
 #             pass
 
+# class BLEBeacon:
+#     """BLE Beacon using bluetoothctl (modern & reliable)"""
+    
+#     def __init__(self):
+#         self.running = False
+#         self.last_data = ""
+        
+#     def setup(self):
+#         try:
+#             # Basic setup
+#             subprocess.run(['sudo', 'hciconfig', 'hci0', 'up'], check=True, capture_output=True)
+#             subprocess.run(['sudo', 'hciconfig', 'hci0', 'piscan'], check=True, capture_output=True)
+            
+#             print(f"✅ BLE ready using bluetoothctl")
+#             return True
+#         except Exception as e:
+#             print(f"❌ Setup failed: {e}")
+#             return False
+
+#     def broadcast(self, distance, speed, auto_mode, ir_list):
+#         if not self.running:
+#             return
+        
+#         ir_bits = ''.join(map(str, ir_list))
+#         payload = f"D{distance}S{speed}M{1 if auto_mode else 0}I{ir_bits}"
+        
+#         if payload == self.last_data:
+#             return
+#         self.last_data = payload
+
+#         try:
+#             # Use heredoc to control bluetoothctl cleanly
+#             cmd = f'''sudo bluetoothctl << 'EOF'
+# menu advertise
+# clear
+# name PiRover
+# manufacturer 0x004c {payload.encode().hex()}
+# discoverable on
+# back
+# advertise on
+# EOF'''
+#             subprocess.run(cmd, shell=True, capture_output=True, timeout=2)
+            
+#         except Exception as e:
+#             print(f"Broadcast error: {e}")
+
+#     def start(self):
+#         self.running = True
+#         return self.setup()
+
+#     def stop(self):
+#         self.running = False
+#         try:
+#             subprocess.run("sudo bluetoothctl advertise off", shell=True, capture_output=True)
+#         except:
+#             pass
+
 class BLEBeacon:
-    """BLE Beacon using bluetoothctl (modern & reliable)"""
+    """Reliable BLE advertising using bluetoothctl"""
     
     def __init__(self):
         self.running = False
@@ -205,14 +262,14 @@ class BLEBeacon:
         
     def setup(self):
         try:
-            # Basic setup
             subprocess.run(['sudo', 'hciconfig', 'hci0', 'up'], check=True, capture_output=True)
             subprocess.run(['sudo', 'hciconfig', 'hci0', 'piscan'], check=True, capture_output=True)
+            subprocess.run(['sudo', 'bluetoothctl', 'power', 'on'], check=True, capture_output=True)
             
-            print(f"✅ BLE ready using bluetoothctl")
+            print(f"✅ BLE advertising initialized (PiRover)")
             return True
         except Exception as e:
-            print(f"❌ Setup failed: {e}")
+            print(f"❌ BLE setup failed: {e}")
             return False
 
     def broadcast(self, distance, speed, auto_mode, ir_list):
@@ -220,27 +277,34 @@ class BLEBeacon:
             return
         
         ir_bits = ''.join(map(str, ir_list))
-        payload = f"D{distance}S{speed}M{1 if auto_mode else 0}I{ir_bits}"
+        payload_str = f"D{distance}S{speed}M{1 if auto_mode else 0}I{ir_bits}"
         
-        if payload == self.last_data:
+        if payload_str == self.last_data:
             return
-        self.last_data = payload
+        self.last_data = payload_str
 
         try:
-            # Use heredoc to control bluetoothctl cleanly
+            # Convert payload to space-separated hex bytes
+            payload_bytes = payload_str.encode('utf-8')
+            hex_data = ' '.join(f'{b:02x}' for b in payload_bytes)
+            
             cmd = f'''sudo bluetoothctl << 'EOF'
 menu advertise
 clear
 name PiRover
-manufacturer 0x004c {payload.encode().hex()}
+manufacturer 0x004c {hex_data}
 discoverable on
 back
 advertise on
 EOF'''
-            subprocess.run(cmd, shell=True, capture_output=True, timeout=2)
             
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=3)
+            
+            if "Failed" in result.stderr or "Error" in result.stderr:
+                print("bluetoothctl warning:", result.stderr.strip())
+                
         except Exception as e:
-            print(f"Broadcast error: {e}")
+            print(f"BLE broadcast error: {e}")
 
     def start(self):
         self.running = True
