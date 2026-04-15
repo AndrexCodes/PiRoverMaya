@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PiRover with BLE Broadcasting - Optimized for 31-byte limit
+PiRover with BLE Broadcasting using hcitool
 Run with: sudo python3 main.py
 """
 
@@ -9,16 +9,6 @@ import time
 import subprocess
 import struct
 from collections import deque
-import threading
-import math
-
-# Try to import DHT11 library
-try:
-    import Adafruit_DHT
-    DHT_AVAILABLE = True
-except ImportError:
-    DHT_AVAILABLE = False
-    print("⚠️ Adafruit_DHT not installed. DHT11 disabled.")
 
 # ========== PIN CONFIGURATION ==========
 PINS = {
@@ -27,9 +17,7 @@ PINS = {
     'ULTRASONIC_TRIG': 5, 'ULTRASONIC_ECHO': 6,
     'IR_TOP_LEFT': 26, 'IR_TOP_RIGHT': 20,
     'IR_BOTTOM_LEFT': 21, 'IR_BOTTOM_RIGHT': 16,
-    'LED1': 24, 'LED2': 25, 'LED3': 8, 'BUZZER': 27,
-    'DHT11': 4,
-    'MQ135': 7
+    'LED1': 24, 'LED2': 25, 'LED3': 8, 'BUZZER': 27
 }
 
 # ========== CONFIGURATION ==========
@@ -38,45 +26,45 @@ ROVER_SPEED = 40
 OBSTACLE_THRESHOLD = 30
 CRITICAL_DISTANCE = 15
 TURN_DURATION = 0.8
-SENSOR_UPDATE_INTERVAL = 2
 
 class BLEBeacon:
-    """Optimized BLE beacon that respects 31-byte limit"""
+
+    """Simple BLE beacon using hcitool - Fixed version"""
     
     def __init__(self):
         self.running = False
         self.last_data = ""
         
     def setup(self):
+
         """Initialize Bluetooth"""
         try:
+
             # Bring up Bluetooth
             subprocess.run(['sudo', 'hciconfig', 'hci0', 'up'], capture_output=True)
-            time.sleep(0.5)
             
-            # Set device name
+            # Set device name so both system scanner and LE apps show "PiRover"
             subprocess.run(['sudo', 'hciconfig', 'hci0', 'name', DEVICE_NAME], capture_output=True)
             
             # Stop any existing advertising
-            subprocess.run(['sudo', 'hciconfig', 'hci0', 'noscan'], capture_output=True)
             subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
             
-            # Set advertising parameters for better visibility
+            # Extra settings for better compatibility
+            subprocess.run(['sudo', 'hciconfig', 'hci0', 'lestate'], capture_output=True)
+            subprocess.run(['sudo', 'hciconfig', 'hci0', 'txpower', '6'], capture_output=True)
+
             subprocess.run([
                 'sudo', 'hcitool', 'cmd', '0x08', '0x0006',
-                '20', '00',   # interval min (32ms for faster discovery)
-                '20', '00',   # interval max
-                '03',         # connectable undirected advertising
+                'a0', '00',   # interval min (100ms)
+                'a0', '00',   # interval max
+                '00',         # connectable undirected advertising
                 '00',         # own address type
                 '00',         # direct addr type
-                '00','00','00','00','00','00',
+                '00','00','00','00','00','00',  # direct addr
                 '07',         # channel map
-                '00'
+                '00'          # filter policy
             ], capture_output=True)
-            
-            # Set TX power for better range
-            subprocess.run(['sudo', 'hciconfig', 'hci0', 'txpower', '6'], capture_output=True)
-            
+
             print(f"✅ BLE beacon ready on hci0 as '{DEVICE_NAME}'")
             return True
         except Exception as e:
@@ -93,81 +81,65 @@ class BLEBeacon:
         self.running = False
         try:
             subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
-            subprocess.run(['sudo', 'hciconfig', 'hci0', 'noscan'], capture_output=True)
         except:
             pass
 
-    def broadcast(self, distance, speed, auto_mode, ir_list, temperature, humidity, gas_detected):
-        """Broadcast compressed sensor data to fit in 31 bytes"""
+    def broadcast(self, distance, speed, auto_mode, ir_list):
+        """Broadcast sensor data as manufacturer-specific data"""
         if not self.running:
             return
 
-        # Compressed format using hex values to save space
-        # Format: D{distance}S{speed}M{mode}I{ir_bits}T{temp_int}H{humidity_int}G{gas}
-        # Temperature and humidity are integers (multiply by 10 for decimal)
-        
-        temp_int = int(temperature * 10) if temperature > 0 else 0
-        hum_int = int(humidity * 10) if humidity > 0 else 0
         ir_bits = ''.join([str(x) for x in ir_list])
-        
-        # Create compressed string (max ~25 chars)
-        data_str = f"D{distance}S{speed}M{1 if auto_mode else 0}I{ir_bits}T{temp_int:03d}H{hum_int:03d}G{1 if gas_detected else 0}"
-        
-        # Truncate if still too long (should be fine)
-        if len(data_str) > 25:
-            data_str = data_str[:25]
+        data_str = f"D{distance}S{speed}M{1 if auto_mode else 0}I{ir_bits}"
         
         if data_str == self.last_data:
             return
         self.last_data = data_str
 
-        # Convert to bytes
+        # Convert string to bytes
         data_bytes = data_str.encode('utf-8')
         
-        # Build advertising packet (max 31 bytes total)
+        # Create manufacturer specific data
+        # Format: [Length][Type: 0xFF][Company ID (2 bytes)][Data]
+        # Using a custom company ID (0xFFFF is reserved for testing)
+        company_id = 0xFFFF  # Use this for testing, or get your own
+        
+        # Build the advertising packet
         adv_data = bytearray()
         
-        # Flags (3 bytes)
-        adv_data.extend([0x02, 0x01, 0x06])
+        # Flags (required)
+        adv_data.extend([0x02, 0x01, 0x06])  # LE General Discoverable, BR/EDR Not Supported
         
-        # Shortened Local Name (use abbreviation if needed)
+        # Local Name (optional but helpful)
         name_bytes = DEVICE_NAME.encode('utf-8')
-        if len(name_bytes) > 8:
-            name_bytes = b'PiRvr'  # Abbreviate if needed
-        
         adv_data.append(len(name_bytes) + 1)
         adv_data.append(0x09)  # Complete Local Name
         adv_data.extend(name_bytes)
         
-        # Calculate remaining space for manufacturer data
-        remaining = 31 - len(adv_data) - 2  # -2 for manufacturer header
-        if len(data_bytes) > remaining:
-            data_bytes = data_bytes[:remaining]
-        
-        # Manufacturer Specific Data
-        company_id = 0xFFFF
-        adv_data.append(len(data_bytes) + 2 + 1)  # +2 for company ID, +1 for type
+        # Manufacturer Specific Data with custom ID
+        # Calculate total length: 2 bytes for company ID + data bytes
+        manuf_len = len(data_bytes) + 2
+        adv_data.append(manuf_len + 1)  # +1 for the type byte
         adv_data.append(0xFF)  # Manufacturer Specific Data type
-        adv_data.extend([company_id & 0xFF, (company_id >> 8) & 0xFF])
+        adv_data.extend([company_id & 0xFF, (company_id >> 8) & 0xFF])  # Company ID (little endian)
         adv_data.extend(data_bytes)
         
-        # Pad to 31 bytes
+        # Pad to 31 bytes as required
         while len(adv_data) < 31:
             adv_data.append(0x00)
         
         # Send the advertising packet
         try:
-            # Stop advertising
+            # Stop current advertising
             subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], 
                         capture_output=True)
-            time.sleep(0.01)
             
             # Set advertising data
-            cmd = ['sudo', 'hcitool', 'cmd', '0x08', '0x0008']
-            cmd.append(f'{len(adv_data):02x}')
+            real_length = len(adv_data)
+            cmd = ['sudo', 'hcitool', 'cmd', '0x08', '0x0008', f'{real_length:02x}']
             for b in adv_data:
                 cmd.append(f'{b:02x}')
-            subprocess.run(cmd, capture_output=True)
+            subprocess.run(' '.join(cmd), shell=True, capture_output=True)
             
             # Start advertising
             subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '01'], 
@@ -175,72 +147,7 @@ class BLEBeacon:
             
         except Exception as e:
             print(f"BLE send error: {e}")
-
-class EnvironmentSensor:
-    """Handle DHT11 and MQ135 sensors"""
-    
-    def __init__(self):
-        self.temperature = 0.0
-        self.humidity = 0.0
-        self.gas_detected = False
-        self.last_update = 0
-        
-    def setup(self):
-        """Setup environment sensors"""
-        if DHT_AVAILABLE:
-            print("✅ DHT11 sensor ready")
-        else:
-            print("⚠️ DHT11 unavailable - install Adafruit_DHT")
-        
-        GPIO.setup(PINS['MQ135'], GPIO.IN)
-        print("✅ MQ135 gas sensor ready")
-    
-    def read_dht11(self):
-        """Read DHT11 sensor"""
-        if not DHT_AVAILABLE:
-            return None, None
-        
-        try:
-            humidity, temperature = Adafruit_DHT.read_retry(
-                Adafruit_DHT.DHT11, 
-                PINS['DHT11']
-            )
             
-            if humidity is not None and temperature is not None:
-                return temperature, humidity
-            else:
-                return None, None
-        except Exception as e:
-            print(f"DHT11 read error: {e}")
-            return None, None
-    
-    def read_mq135(self):
-        """Read MQ135 gas sensor (digital output)"""
-        try:
-            gas_status = GPIO.input(PINS['MQ135'])
-            return gas_status == 0
-        except Exception as e:
-            print(f"MQ135 read error: {e}")
-            return False
-    
-    def update(self):
-        """Update all environment sensors"""
-        current_time = time.time()
-        
-        if current_time - self.last_update >= SENSOR_UPDATE_INTERVAL:
-            temp, hum = self.read_dht11()
-            if temp is not None and hum is not None:
-                self.temperature = temp
-                self.humidity = hum
-            
-            self.gas_detected = self.read_mq135()
-            self.last_update = current_time
-            
-            if self.gas_detected:
-                print(f"\n⚠️ GAS DETECTED! Temp: {self.temperature:.1f}°C Hum: {self.humidity:.1f}%")
-        
-        return self.temperature, self.humidity, self.gas_detected
-
 class MotorController:
     def __init__(self):
         self.current_speed = ROVER_SPEED
@@ -330,7 +237,7 @@ class ObstacleDetector:
                    PINS['IR_BOTTOM_LEFT'], PINS['IR_BOTTOM_RIGHT']]
         for pin in ir_pins:
             GPIO.setup(pin, GPIO.IN)
-        print("✅ Obstacle sensors ready")
+        print("✅ Sensors ready")
     
     def get_distance(self):
         try:
@@ -384,7 +291,6 @@ class NavigationSystem:
     def __init__(self):
         self.motors = MotorController()
         self.detector = ObstacleDetector()
-        self.environment = EnvironmentSensor()
         self.ble = BLEBeacon()
         self.running = False
         self.auto_mode = True
@@ -403,7 +309,7 @@ class NavigationSystem:
     def initialize(self):
         print("\n" + "="*50)
         print("   PiRover Navigation System")
-        print("   Optimized BLE Broadcasting")
+        print("   BLE Beacon Broadcasting")
         print("="*50)
         
         GPIO.setmode(GPIO.BCM)
@@ -417,7 +323,6 @@ class NavigationSystem:
         # Initialize hardware
         self.motors.setup()
         self.detector.setup()
-        self.environment.setup()
         
         # Ready signal
         self.beep(0.2)
@@ -427,7 +332,7 @@ class NavigationSystem:
         print(f"\n✅ System Ready! (Speed: {ROVER_SPEED}%)")
         print(f"🤖 Mode: AUTO (default)")
         print(f"📡 BLE Beacon: {DEVICE_NAME}")
-        print("   Broadcasting compressed sensor data")
+        print("   Broadcasting sensor data every 0.2s")
         print("\nPress Ctrl+C to stop\n")
         
         return True
@@ -441,14 +346,11 @@ class NavigationSystem:
         ir = self.detector.get_ir()
         speed = self.motors.current_speed
         
-        temp, hum, gas = self.environment.update()
-        
-        self.ble.broadcast(distance, speed, self.auto_mode, ir, temp, hum, gas)
+        self.ble.broadcast(distance, speed, self.auto_mode, ir)
     
     def run(self):
         self.running = True
         last_broadcast = time.time()
-        last_env_print = time.time()
         
         try:
             while self.running:
@@ -458,15 +360,7 @@ class NavigationSystem:
                     
                     ir = self.detector.get_ir()
                     ir_str = ''.join(['X' if x else '.' for x in ir])
-                    
-                    temp, hum, gas = self.environment.update()
-                    
-                    gas_marker = "⚠️GAS! " if gas else ""
-                    print(f"\r{gas_marker}📡 Dist:{int(dist):3d}cm IR:[{ir_str}] {action:5} Speed:{self.motors.current_speed}%", end='')
-                    
-                    if gas and time.time() - last_env_print > 5:
-                        self.beep(0.3)
-                        last_env_print = time.time()
+                    print(f"\r📡 Dist:{int(dist):3d}cm IR:[{ir_str}] {action:5} Speed:{self.motors.current_speed}%", end='')
                     
                     if action == 'FWD':
                         self.motors.forward()
@@ -496,8 +390,8 @@ class NavigationSystem:
                         time.sleep(TURN_DURATION * 1.5)
                         self.motors.stop()
                 
-                # Broadcast every 0.3 seconds (reduced frequency)
-                if time.time() - last_broadcast >= 0.3:
+                # Broadcast every 0.2 seconds
+                if time.time() - last_broadcast >= 0.2:
                     self.broadcast_sensor_data()
                     last_broadcast = time.time()
                 
