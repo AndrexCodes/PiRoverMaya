@@ -34,7 +34,7 @@ class BLEBeacon:
         self.running = False
         self.last_data = ""
         
-        def setup(self):
+    def setup(self):
         try:
             subprocess.run(['sudo', 'hciconfig', 'hci0', 'up'], capture_output=True)
             # Reset advertising
@@ -44,7 +44,7 @@ class BLEBeacon:
         except Exception as e:
             print(f"⚠️ BLE setup error: {e}")
             return False
-            
+
     def broadcast(self, distance, speed, auto_mode, ir_list):
         """Broadcast sensor data"""
         if not self.running:
