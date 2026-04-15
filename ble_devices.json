@@ -1,16 +1,9 @@
 {
-  "77:39:29:B4:35:6F": {
-    "name": null,
-    "address": "77:39:29:B4:35:6F",
-    "rssi": -84,
-    "payload": ".L\u0006",
-    "last_seen": "11:18:46.817"
-  },
-  "C6:15:99:CF:2C:AC": {
-    "name": "BT05",
-    "address": "C6:15:99:CF:2C:AC",
-    "rssi": -59,
-    "payload": "",
-    "last_seen": "11:18:46.835"
+  "79:3B:12:7F:72:F1": {
+    "name": "raspberrypi",
+    "address": "79:3B:12:7F:72:F1",
+    "rssi": -85,
+    "payload": "48fc2f0b38f0",
+    "last_seen": "11:31:16"
   }
 }

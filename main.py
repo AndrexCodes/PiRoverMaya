@@ -53,6 +53,18 @@ class BLEBeacon:
             subprocess.run(['sudo', 'hciconfig', 'hci0', 'lestate'], capture_output=True)
             subprocess.run(['sudo', 'hciconfig', 'hci0', 'txpower', '6'], capture_output=True)
 
+            subprocess.run([
+                'sudo', 'hcitool', 'cmd', '0x08', '0x0006',
+                'a0', '00',   # interval min (100ms)
+                'a0', '00',   # interval max
+                '00',         # connectable undirected advertising
+                '00',         # own address type
+                '00',         # direct addr type
+                '00','00','00','00','00','00',  # direct addr
+                '07',         # channel map
+                '00'          # filter policy
+            ], capture_output=True)
+
             print(f"✅ BLE beacon ready on hci0 as '{DEVICE_NAME}'")
             return True
         except Exception as e:
@@ -98,6 +110,15 @@ class BLEBeacon:
         data_bytes = data_str.encode('utf-8')
         adv_data.extend([len(data_bytes) + 2, 0xFF, 0x4C, 0x00])  # Apple company ID
         adv_data.extend(data_bytes)
+
+        # Set scan response (include name again)
+        name_bytes = DEVICE_NAME.encode('utf-8')
+        scan_rsp = [len(name_bytes)+1, 0x09] + list(name_bytes)
+
+        cmd = ['sudo', 'hcitool', 'cmd', '0x08', '0x0009', f'{len(scan_rsp):02x}']
+        cmd += [f'{b:02x}' for b in scan_rsp]
+
+        subprocess.run(' '.join(cmd), shell=True, capture_output=True)
 
         # === CRITICAL: Calculate real length and pad correctly ===
         real_length = len(adv_data)
