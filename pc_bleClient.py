@@ -413,10 +413,12 @@ def decode_payload(data: bytes):
     except:
         return data.hex()
 
-def get_random_kenya_environment():
+def get_kenya_ambient_random():
     """Generate randomized ambient Kenya-like environment values."""
-    temperature_c = round(random.uniform(20.0, 29.0), 1)
-    humidity_pct = round(random.uniform(55.0, 75.0), 1)
+    avg_temperature_c = 24.0
+    avg_humidity_pct = 65.0
+    temperature_c = round(random.uniform(avg_temperature_c - 1.0, avg_temperature_c + 1.0), 1)
+    humidity_pct = round(random.uniform(avg_humidity_pct - 1.0, avg_humidity_pct + 1.0), 1)
     return temperature_c, humidity_pct
 
 def parse_rover_data(data_string):
@@ -440,7 +442,7 @@ def parse_rover_data(data_string):
         ir_bits = data_string[i_pos+1:t_pos] if t_pos != -1 else data_string[i_pos+1:]
         
         # Use randomized ambient values for Kenya environment
-        temperature, humidity = get_random_kenya_environment()
+        temperature, humidity = get_kenya_ambient_random()
         gas_detected = False
         
         if g_pos != -1:
@@ -569,6 +571,9 @@ def index():
 def get_latest():
     """Get the latest rover data"""
     if CURRENT_DATA.get("parsed_data"):
+        temp, hum = get_kenya_ambient_random()
+        CURRENT_DATA["parsed_data"]["temperature"] = temp
+        CURRENT_DATA["parsed_data"]["humidity"] = hum
         return jsonify({
             "status": "success",
             "data": {

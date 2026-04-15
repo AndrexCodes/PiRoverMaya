@@ -294,12 +294,31 @@ class NavigationSystem:
         self.ble = BLEBeacon()
         self.running = False
         self.auto_mode = True
+        self.is_moving = False
+        self.led2_blink_state = False
+        self.last_led2_toggle = 0.0
+        self.led2_blink_interval = 0.2
     
     def setup_indicators(self):
         for pin in [PINS['LED1'], PINS['LED2'], PINS['LED3']]:
             GPIO.setup(pin, GPIO.OUT)
             GPIO.output(pin, GPIO.LOW)
         GPIO.setup(PINS['BUZZER'], GPIO.OUT)
+
+    def set_moving(self, moving):
+        self.is_moving = moving
+        if not moving:
+            self.led2_blink_state = False
+            GPIO.output(PINS['LED2'], GPIO.LOW)
+
+    def update_led2_blink(self):
+        if not self.is_moving:
+            return
+        now = time.time()
+        if now - self.last_led2_toggle >= self.led2_blink_interval:
+            self.led2_blink_state = not self.led2_blink_state
+            GPIO.output(PINS['LED2'], GPIO.HIGH if self.led2_blink_state else GPIO.LOW)
+            self.last_led2_toggle = now
     
     def beep(self, duration=0.1):
         GPIO.output(PINS['BUZZER'], GPIO.HIGH)
@@ -315,6 +334,7 @@ class NavigationSystem:
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
         self.setup_indicators()
+        GPIO.output(PINS['LED1'], GPIO.HIGH)
         
         # Initialize BLE beacon
         if not self.ble.start():
@@ -354,6 +374,7 @@ class NavigationSystem:
         
         try:
             while self.running:
+                self.update_led2_blink()
                 if self.auto_mode:
                     dist = self.detector.get_distance()
                     action = self.detector.analyze()
@@ -363,32 +384,43 @@ class NavigationSystem:
                     print(f"\r📡 Dist:{int(dist):3d}cm IR:[{ir_str}] {action:5} Speed:{self.motors.current_speed}%", end='')
                     
                     if action == 'FWD':
+                        self.set_moving(True)
                         self.motors.forward()
                     elif action == 'LEFT':
+                        self.set_moving(True)
                         self.motors.stop()
                         time.sleep(0.1)
                         self.motors.turn_left()
                         time.sleep(TURN_DURATION)
                         self.motors.stop()
+                        self.set_moving(False)
                         self.beep(0.05)
                     elif action == 'RIGHT':
+                        self.set_moving(True)
                         self.motors.stop()
                         time.sleep(0.1)
                         self.motors.turn_right()
                         time.sleep(TURN_DURATION)
                         self.motors.stop()
+                        self.set_moving(False)
                         self.beep(0.05)
                     elif action == 'BACK':
+                        self.set_moving(True)
                         self.motors.backward()
                         time.sleep(0.8)
                         self.motors.stop()
+                        self.set_moving(False)
                         self.beep(0.2)
                     elif action == 'TURN':
+                        self.set_moving(True)
                         self.motors.stop()
                         time.sleep(0.1)
                         self.motors.turn_left()
                         time.sleep(TURN_DURATION * 1.5)
                         self.motors.stop()
+                        self.set_moving(False)
+                else:
+                    self.set_moving(False)
                 
                 # Broadcast every 0.2 seconds
                 if time.time() - last_broadcast >= 0.2:
@@ -403,8 +435,10 @@ class NavigationSystem:
     
     def stop(self):
         self.running = False
+        self.set_moving(False)
         self.motors.stop()
         self.ble.stop()
+        GPIO.output(PINS['LED1'], GPIO.LOW)
         GPIO.cleanup()
         print("✅ System stopped")
 
