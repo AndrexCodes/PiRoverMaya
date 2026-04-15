@@ -1,0 +1,253 @@
+{
+  "B8:27:EB:89:C1:AA": {
+    "name": "Unknown",
+    "address": "B8:27:EB:89:C1:AA",
+    "rssi": -41,
+    "payload": {
+      "manufacturer_data": {},
+      "service_data": {},
+      "local_name": null,
+      "service_uuids": [],
+      "tx_power": null
+    },
+    "last_seen": "09:13:45.872"
+  },
+  "22:F6:54:85:74:4D": {
+    "name": "Unknown",
+    "address": "22:F6:54:85:74:4D",
+    "rssi": -127,
+    "payload": {
+      "manufacturer_data": {},
+      "service_data": {
+        "0000fcf1-0000-1000-8000-00805f9b34fb": "0414e95d569ac3e175f0e375e16511f83e945774dc"
+      },
+      "local_name": null,
+      "service_uuids": [],
+      "tx_power": null
+    },
+    "last_seen": "09:10:56.157"
+  },
+  "5C:8A:63:7A:B0:F6": {
+    "name": "Unknown",
+    "address": "5C:8A:63:7A:B0:F6",
+    "rssi": -127,
+    "payload": {
+      "manufacturer_data": {
+        "0x0075": "6c2d4e7ee248a89d49f210"
+      },
+      "service_data": {},
+      "local_name": null,
+      "service_uuids": [],
+      "tx_power": null
+    },
+    "last_seen": "09:09:58.112"
+  },
+  "18:0D:96:DA:5E:9E": {
+    "name": "Unknown",
+    "address": "18:0D:96:DA:5E:9E",
+    "rssi": -127,
+    "payload": {
+      "manufacturer_data": {},
+      "service_data": {
+        "0000fcf1-0000-1000-8000-00805f9b34fb": "0400c6851ad064cf4d8ac8876e11d1459515a74edc"
+      },
+      "local_name": null,
+      "service_uuids": [],
+      "tx_power": null
+    },
+    "last_seen": "09:09:35.808"
+  },
+  "CC:02:3B:51:27:31": {
+    "name": "BT05",
+    "address": "CC:02:3B:51:27:31",
+    "rssi": -71,
+    "payload": {
+      "manufacturer_data": {},
+      "service_data": {
+        "0000cbff-0000-1000-8000-00805f9b34fb": "113a041913261064640409740000000000"
+      },
+      "local_name": "BT05",
+      "service_uuids": [],
+      "tx_power": null
+    },
+    "last_seen": "09:13:46.618"
+  },
+  "C6:15:99:CF:2C:AC": {
+    "name": "BT05",
+    "address": "C6:15:99:CF:2C:AC",
+    "rssi": -66,
+    "payload": {
+      "manufacturer_data": {},
+      "service_data": {
+        "0000cbff-0000-1000-8000-00805f9b34fb": "113a041913261063640409920000000000"
+      },
+      "local_name": "BT05",
+      "service_uuids": [],
+      "tx_power": null
+    },
+    "last_seen": "09:13:46.579"
+  },
+  "31:C6:AF:80:E7:94": {
+    "name": "Unknown",
+    "address": "31:C6:AF:80:E7:94",
+    "rssi": -95,
+    "payload": {
+      "manufacturer_data": {},
+      "service_data": {
+        "0000fcf1-0000-1000-8000-00805f9b34fb": "0400c6851ad064cf4d8ac8876e11d1459515a74edc"
+      },
+      "local_name": null,
+      "service_uuids": [],
+      "tx_power": null
+    },
+    "last_seen": "09:13:47.426"
+  },
+  "27:E0:F8:D6:32:3D": {
+    "name": "Unknown",
+    "address": "27:E0:F8:D6:32:3D",
+    "rssi": -127,
+    "payload": {
+      "manufacturer_data": {},
+      "service_data": {
+        "0000fcf1-0000-1000-8000-00805f9b34fb": "04899fecd8540332058d1320550839dacc702dac0a"
+      },
+      "local_name": null,
+      "service_uuids": [],
+      "tx_power": null
+    },
+    "last_seen": "09:10:11.508"
+  },
+  "FA:3C:ED:D9:7B:0D": {
+    "name": "TEK_LE",
+    "address": "FA:3C:ED:D9:7B:0D",
+    "rssi": -92,
+    "payload": {
+      "manufacturer_data": {},
+      "service_data": {},
+      "local_name": "TEK_LE",
+      "service_uuids": [],
+      "tx_power": 0
+    },
+    "last_seen": "09:13:22.616"
+  },
+  "67:BB:B3:36:4F:BA": {
+    "name": "Unknown",
+    "address": "67:BB:B3:36:4F:BA",
+    "rssi": -127,
+    "payload": {
+      "manufacturer_data": {
+        "0x0075": "bf5bff34d9b1"
+      },
+      "service_data": {},
+      "local_name": null,
+      "service_uuids": [],
+      "tx_power": null
+    },
+    "last_seen": "09:13:25.073"
+  },
+  "0E:DC:1E:0F:34:4F": {
+    "name": "Unknown",
+    "address": "0E:DC:1E:0F:34:4F",
+    "rssi": -127,
+    "payload": {
+      "manufacturer_data": {},
+      "service_data": {
+        "0000fcf1-0000-1000-8000-00805f9b34fb": "04831cb620c7fb8babc3db748cfdc6a5fdb81cda50"
+      },
+      "local_name": null,
+      "service_uuids": [],
+      "tx_power": null
+    },
+    "last_seen": "09:10:49.982"
+  },
+  "00:D3:2F:8A:85:0F": {
+    "name": "Unknown",
+    "address": "00:D3:2F:8A:85:0F",
+    "rssi": -93,
+    "payload": {
+      "manufacturer_data": {},
+      "service_data": {
+        "0000fcf1-0000-1000-8000-00805f9b34fb": "0414e95d569ac3e175f0e375e16511f83e945774dc"
+      },
+      "local_name": null,
+      "service_uuids": [],
+      "tx_power": null
+    },
+    "last_seen": "09:13:48.042"
+  },
+  "3E:4C:E5:C3:05:4F": {
+    "name": "Unknown",
+    "address": "3E:4C:E5:C3:05:4F",
+    "rssi": -127,
+    "payload": {
+      "manufacturer_data": {},
+      "service_data": {
+        "0000fcf1-0000-1000-8000-00805f9b34fb": "04527801c9a74cfb4108c5cdd9b063ae91c1b05b4a"
+      },
+      "local_name": null,
+      "service_uuids": [],
+      "tx_power": null
+    },
+    "last_seen": "09:11:46.225"
+  },
+  "1A:05:77:7B:A9:BA": {
+    "name": "Unknown",
+    "address": "1A:05:77:7B:A9:BA",
+    "rssi": -94,
+    "payload": {
+      "manufacturer_data": {},
+      "service_data": {
+        "0000fcf1-0000-1000-8000-00805f9b34fb": "04e69fbb5f5df069eefc6b8f9cd88d7227c57dc029"
+      },
+      "local_name": null,
+      "service_uuids": [],
+      "tx_power": null
+    },
+    "last_seen": "09:13:36.913"
+  },
+  "34:42:7D:71:C2:90": {
+    "name": "Unknown",
+    "address": "34:42:7D:71:C2:90",
+    "rssi": -93,
+    "payload": {
+      "manufacturer_data": {},
+      "service_data": {
+        "0000fcf1-0000-1000-8000-00805f9b34fb": "04a71f9abddadabd4bcdc8f0dd98dbd6b550b15590"
+      },
+      "local_name": null,
+      "service_uuids": [],
+      "tx_power": null
+    },
+    "last_seen": "09:13:44.726"
+  },
+  "3A:7E:C1:11:20:D4": {
+    "name": "Unknown",
+    "address": "3A:7E:C1:11:20:D4",
+    "rssi": -94,
+    "payload": {
+      "manufacturer_data": {},
+      "service_data": {
+        "0000fef3-0000-1000-8000-00805f9b34fb": "4a172339475a5911325d9ebf0a67d84a64ab4041ca6dc0e1b1b563"
+      },
+      "local_name": null,
+      "service_uuids": [],
+      "tx_power": null
+    },
+    "last_seen": "09:13:32.988"
+  },
+  "7D:64:1C:55:3F:4F": {
+    "name": "Unknown",
+    "address": "7D:64:1C:55:3F:4F",
+    "rssi": -72,
+    "payload": {
+      "manufacturer_data": {
+        "0x0075": "e4c9ce490e783383b43ab6"
+      },
+      "service_data": {},
+      "local_name": null,
+      "service_uuids": [],
+      "tx_power": null
+    },
+    "last_seen": "09:13:47.663"
+  }
+}
