@@ -9,6 +9,7 @@ import time
 import subprocess
 import struct
 from collections import deque
+from compass import HMC5883L
 
 # ========== PIN CONFIGURATION ==========
 PINS = {
@@ -26,6 +27,12 @@ ROVER_SPEED = 20
 OBSTACLE_THRESHOLD = 30
 CRITICAL_DISTANCE = 15
 TURN_DURATION = 0.8
+SAFE_DISTANCE = 20
+MISSION_SIDES = 4
+START_SPEED = 10
+SPEED_STEP = 2
+SPEED_RAMP_INTERVAL = 0.35
+TURN_TOLERANCE_DEG = 4.0
 
 class BLEBeacon:
 
@@ -292,6 +299,7 @@ class NavigationSystem:
         self.motors = MotorController()
         self.detector = ObstacleDetector()
         self.ble = BLEBeacon()
+        self.compass = None
         self.running = False
         self.auto_mode = True
         self.is_moving = False
@@ -343,16 +351,25 @@ class NavigationSystem:
         # Initialize hardware
         self.motors.setup()
         self.detector.setup()
+
+        # Initialize compass for mission turns
+        try:
+            self.compass = HMC5883L()
+            print("✅ Compass ready")
+        except Exception as e:
+            self.compass = None
+            print(f"⚠️ Compass unavailable ({e}) - falling back to timed turns")
         
         # Ready signal
         self.beep(0.2)
         time.sleep(0.1)
         self.beep(0.2)
         
-        print(f"\n✅ System Ready! (Speed: {ROVER_SPEED}%)")
-        print(f"🤖 Mode: AUTO (default)")
+        print(f"\n✅ System Ready! (Cruise speed: {ROVER_SPEED}%)")
+        print(f"🤖 Mode: AUTO SQUARE MISSION (default)")
         print(f"📡 BLE Beacon: {DEVICE_NAME}")
         print("   Broadcasting sensor data every 0.2s")
+        print(f"   Mission: {MISSION_SIDES} sides, right 90° at < {SAFE_DISTANCE}cm")
         print("\nPress Ctrl+C to stop\n")
         
         return True
@@ -367,70 +384,161 @@ class NavigationSystem:
         speed = self.motors.current_speed
         
         self.ble.broadcast(distance, speed, self.auto_mode, ir)
+
+    @staticmethod
+    def _normalize_heading(heading):
+        return heading % 360.0
+
+    @staticmethod
+    def _angle_error(current, target):
+        return ((target - current + 540.0) % 360.0) - 180.0
+
+    def read_heading(self, samples=5):
+        if not self.compass:
+            return None
+
+        headings = []
+        for _ in range(samples):
+            data = self.compass.read_raw_data()
+            if not data:
+                continue
+            x, z, y = data
+            headings.append(self.compass.get_heading(x, y, z))
+            time.sleep(0.01)
+
+        if not headings:
+            return None
+        return sum(headings) / len(headings)
+
+    def turn_right_90(self):
+        start_heading = self.read_heading()
+
+        if start_heading is None:
+            self.set_moving(True)
+            self.motors.turn_right()
+            time.sleep(TURN_DURATION)
+            self.motors.stop()
+            self.set_moving(False)
+            return False
+
+        target_heading = self._normalize_heading(start_heading + 90.0)
+        print(f"\n↪️ Turn start: {start_heading:6.1f}° -> target: {target_heading:6.1f}°")
+
+        in_tolerance_count = 0
+        start_time = time.time()
+
+        while self.running and time.time() - start_time < 8.0:
+            self.update_led2_blink()
+            heading = self.read_heading(samples=3)
+
+            if heading is None:
+                continue
+
+            error = self._angle_error(heading, target_heading)
+            abs_error = abs(error)
+
+            if abs_error <= TURN_TOLERANCE_DEG:
+                in_tolerance_count += 1
+                self.motors.stop()
+            else:
+                in_tolerance_count = 0
+                self.set_moving(True)
+                self.motors.turn_right()
+
+            print(f"\r🧭 Turning... heading:{heading:6.1f}° err:{error:6.1f}°", end='')
+
+            if in_tolerance_count >= 3:
+                self.motors.stop()
+                self.set_moving(False)
+                print(f"\r✅ Turn done   heading:{heading:6.1f}° err:{error:6.1f}°")
+                return True
+
+            self.broadcast_sensor_data()
+            time.sleep(0.04)
+
+        self.motors.stop()
+        self.set_moving(False)
+        print("\n⚠️ Turn timeout - continuing mission")
+        return False
+
+    def run_square_mission(self):
+        side_index = 0
+        last_broadcast = time.time()
+
+        while self.running and side_index < MISSION_SIDES:
+            side_number = side_index + 1
+            print(f"\n\n🟩 Side {side_number}/{MISSION_SIDES} - moving forward")
+
+            current_speed = START_SPEED
+            self.motors.set_speed(current_speed)
+            last_ramp = time.time()
+
+            while self.running:
+                self.update_led2_blink()
+
+                dist = self.detector.get_distance()
+                ir = self.detector.get_ir()
+                ir_str = ''.join(['X' if x else '.' for x in ir])
+
+                if dist < SAFE_DISTANCE:
+                    self.motors.stop()
+                    self.set_moving(False)
+                    self.beep(0.08)
+                    print(f"\n🛑 Safe distance reached ({int(dist)}cm). Preparing right turn...")
+                    break
+
+                now = time.time()
+                if now - last_ramp >= SPEED_RAMP_INTERVAL and current_speed < ROVER_SPEED:
+                    current_speed = min(ROVER_SPEED, current_speed + SPEED_STEP)
+                    self.motors.set_speed(current_speed)
+                    last_ramp = now
+
+                self.set_moving(True)
+                self.motors.forward()
+
+                heading = self.read_heading(samples=2)
+                heading_text = f"{heading:6.1f}°" if heading is not None else "  n/a  "
+
+                print(
+                    f"\r📡 Side:{side_number} Dist:{int(dist):3d}cm "
+                    f"IR:[{ir_str}] Speed:{self.motors.current_speed:2d}% "
+                    f"Heading:{heading_text}",
+                    end=''
+                )
+
+                if now - last_broadcast >= 0.2:
+                    self.broadcast_sensor_data()
+                    last_broadcast = now
+
+                time.sleep(0.05)
+
+            if not self.running:
+                return False
+
+            self.turn_right_90()
+            side_index += 1
+
+        self.motors.stop()
+        self.set_moving(False)
+        print("\n\n🏁 Square mission complete. Returned to base path.")
+        return True
     
     def run(self):
         self.running = True
-        last_broadcast = time.time()
         
         try:
             while self.running:
-                self.update_led2_blink()
                 if self.auto_mode:
-                    dist = self.detector.get_distance()
-                    action = self.detector.analyze()
-                    
-                    ir = self.detector.get_ir()
-                    ir_str = ''.join(['X' if x else '.' for x in ir])
-                    print(f"\r📡 Dist:{int(dist):3d}cm IR:[{ir_str}] {action:5} Speed:{self.motors.current_speed}%", end='')
-                    
-                    if action == 'FWD':
-                        self.set_moving(True)
-                        self.motors.forward()
-                    elif action == 'LEFT':
-                        self.set_moving(True)
-                        self.motors.stop()
-                        time.sleep(0.1)
-                        self.motors.turn_left()
-                        time.sleep(TURN_DURATION)
-                        self.motors.stop()
-                        self.set_moving(False)
-                        self.beep(0.05)
-                    elif action == 'RIGHT':
-                        self.set_moving(True)
-                        self.motors.stop()
-                        time.sleep(0.1)
-                        self.motors.turn_right()
-                        time.sleep(TURN_DURATION)
-                        self.motors.stop()
-                        self.set_moving(False)
-                        self.beep(0.05)
-                    elif action == 'BACK':
-                        self.set_moving(True)
-                        self.motors.backward()
-                        time.sleep(0.8)
-                        self.motors.stop()
-                        self.set_moving(False)
-                        self.beep(0.2)
-                    elif action == 'TURN':
-                        self.set_moving(True)
-                        self.motors.stop()
-                        time.sleep(0.1)
-                        self.motors.turn_left()
-                        time.sleep(TURN_DURATION * 1.5)
-                        self.motors.stop()
-                        self.set_moving(False)
+                    self.run_square_mission()
+                    self.running = False
                 else:
                     self.set_moving(False)
-                
-                # Broadcast every 0.2 seconds
-                if time.time() - last_broadcast >= 0.2:
-                    self.broadcast_sensor_data()
-                    last_broadcast = time.time()
-                
+
                 time.sleep(0.05)
                 
         except KeyboardInterrupt:
             print("\n\n🛑 Stopping...")
+        finally:
             self.stop()
     
     def stop(self):
