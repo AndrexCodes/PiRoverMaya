@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-PiRover with BLE Broadcasting using hcitool
+PiRover with Web Server API
 Run with: sudo python3 main.py
 """
 
 import RPi.GPIO as GPIO
 import time
-import subprocess
-import struct
+import threading
+import json
+from flask import Flask, request, jsonify
 from collections import deque
 from compass import HMC5883L
 
@@ -22,7 +23,6 @@ PINS = {
 }
 
 # ========== CONFIGURATION ==========
-DEVICE_NAME = 'PiRover'
 ROVER_SPEED = 20
 OBSTACLE_THRESHOLD = 30
 CRITICAL_DISTANCE = 15
@@ -33,134 +33,21 @@ START_SPEED = 10
 SPEED_STEP = 2
 SPEED_RAMP_INTERVAL = 0.35
 TURN_TOLERANCE_DEG = 4.0
+API_HOST = '0.0.0.0'
+API_PORT = 5000
 
-class BLEBeacon:
+# ========== FLASK APP ==========
+app = Flask(__name__)
+nav_system = None  # Will be set during initialization
 
-    """Simple BLE beacon using hcitool - Fixed version"""
-    
-    def __init__(self):
-        self.running = False
-        self.last_data = ""
-        
-    def setup(self):
 
-        """Initialize Bluetooth"""
-        try:
-
-            # Bring up Bluetooth
-            subprocess.run(['sudo', 'hciconfig', 'hci0', 'up'], capture_output=True)
-            
-            # Set device name so both system scanner and LE apps show "PiRover"
-            subprocess.run(['sudo', 'hciconfig', 'hci0', 'name', DEVICE_NAME], capture_output=True)
-            
-            # Stop any existing advertising
-            subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
-            
-            # Extra settings for better compatibility
-            subprocess.run(['sudo', 'hciconfig', 'hci0', 'lestate'], capture_output=True)
-            subprocess.run(['sudo', 'hciconfig', 'hci0', 'txpower', '6'], capture_output=True)
-
-            subprocess.run([
-                'sudo', 'hcitool', 'cmd', '0x08', '0x0006',
-                'a0', '00',   # interval min (100ms)
-                'a0', '00',   # interval max
-                '00',         # connectable undirected advertising
-                '00',         # own address type
-                '00',         # direct addr type
-                '00','00','00','00','00','00',  # direct addr
-                '07',         # channel map
-                '00'          # filter policy
-            ], capture_output=True)
-
-            print(f"✅ BLE beacon ready on hci0 as '{DEVICE_NAME}'")
-            return True
-        except Exception as e:
-            print(f"⚠️ BLE setup error: {e}")
-            return False
-    
-    def start(self):
-        """Start the beacon"""
-        self.running = True
-        return self.setup()
-    
-    def stop(self):
-        """Stop advertising"""
-        self.running = False
-        try:
-            subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], capture_output=True)
-        except:
-            pass
-
-    def broadcast(self, distance, speed, auto_mode, ir_list):
-        """Broadcast sensor data as manufacturer-specific data"""
-        if not self.running:
-            return
-
-        ir_bits = ''.join([str(x) for x in ir_list])
-        data_str = f"D{distance}S{speed}M{1 if auto_mode else 0}I{ir_bits}"
-        
-        if data_str == self.last_data:
-            return
-        self.last_data = data_str
-
-        # Convert string to bytes
-        data_bytes = data_str.encode('utf-8')
-        
-        # Create manufacturer specific data
-        # Format: [Length][Type: 0xFF][Company ID (2 bytes)][Data]
-        # Using a custom company ID (0xFFFF is reserved for testing)
-        company_id = 0xFFFF  # Use this for testing, or get your own
-        
-        # Build the advertising packet
-        adv_data = bytearray()
-        
-        # Flags (required)
-        adv_data.extend([0x02, 0x01, 0x06])  # LE General Discoverable, BR/EDR Not Supported
-        
-        # Local Name (optional but helpful)
-        name_bytes = DEVICE_NAME.encode('utf-8')
-        adv_data.append(len(name_bytes) + 1)
-        adv_data.append(0x09)  # Complete Local Name
-        adv_data.extend(name_bytes)
-        
-        # Manufacturer Specific Data with custom ID
-        # Calculate total length: 2 bytes for company ID + data bytes
-        manuf_len = len(data_bytes) + 2
-        adv_data.append(manuf_len + 1)  # +1 for the type byte
-        adv_data.append(0xFF)  # Manufacturer Specific Data type
-        adv_data.extend([company_id & 0xFF, (company_id >> 8) & 0xFF])  # Company ID (little endian)
-        adv_data.extend(data_bytes)
-        
-        # Pad to 31 bytes as required
-        while len(adv_data) < 31:
-            adv_data.append(0x00)
-        
-        # Send the advertising packet
-        try:
-            # Stop current advertising
-            subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '00'], 
-                        capture_output=True)
-            
-            # Set advertising data
-            real_length = len(adv_data)
-            cmd = ['sudo', 'hcitool', 'cmd', '0x08', '0x0008', f'{real_length:02x}']
-            for b in adv_data:
-                cmd.append(f'{b:02x}')
-            subprocess.run(' '.join(cmd), shell=True, capture_output=True)
-            
-            # Start advertising
-            subprocess.run(['sudo', 'hcitool', 'cmd', '0x08', '0x000a', '01'], 
-                        capture_output=True)
-            
-        except Exception as e:
-            print(f"BLE send error: {e}")
-            
 class MotorController:
     def __init__(self):
         self.current_speed = ROVER_SPEED
         self.pwm_a = None
         self.pwm_b = None
         self.running = False
+        self._lock = threading.Lock()
     
     def setup(self):
         GPIO.setup(PINS['L298N_IN1'], GPIO.OUT)
@@ -178,50 +65,56 @@ class MotorController:
         print(f"✅ Motors ready ({self.current_speed}%)")
     
     def set_speed(self, speed):
-        self.current_speed = max(0, min(100, speed))
-        if self.running:
-            self.pwm_a.ChangeDutyCycle(self.current_speed)
-            self.pwm_b.ChangeDutyCycle(self.current_speed)
+        with self._lock:
+            self.current_speed = max(0, min(100, speed))
+            if self.running:
+                self.pwm_a.ChangeDutyCycle(self.current_speed)
+                self.pwm_b.ChangeDutyCycle(self.current_speed)
     
     def forward(self):
-        self.pwm_a.ChangeDutyCycle(self.current_speed)
-        self.pwm_b.ChangeDutyCycle(self.current_speed)
-        GPIO.output(PINS['L298N_IN1'], GPIO.HIGH)
-        GPIO.output(PINS['L298N_IN2'], GPIO.LOW)
-        GPIO.output(PINS['L298N_IN3'], GPIO.HIGH)
-        GPIO.output(PINS['L298N_IN4'], GPIO.LOW)
+        with self._lock:
+            self.pwm_a.ChangeDutyCycle(self.current_speed)
+            self.pwm_b.ChangeDutyCycle(self.current_speed)
+            GPIO.output(PINS['L298N_IN1'], GPIO.HIGH)
+            GPIO.output(PINS['L298N_IN2'], GPIO.LOW)
+            GPIO.output(PINS['L298N_IN3'], GPIO.HIGH)
+            GPIO.output(PINS['L298N_IN4'], GPIO.LOW)
     
     def backward(self):
-        self.pwm_a.ChangeDutyCycle(35)
-        self.pwm_b.ChangeDutyCycle(35)
-        GPIO.output(PINS['L298N_IN1'], GPIO.LOW)
-        GPIO.output(PINS['L298N_IN2'], GPIO.HIGH)
-        GPIO.output(PINS['L298N_IN3'], GPIO.LOW)
-        GPIO.output(PINS['L298N_IN4'], GPIO.HIGH)
+        with self._lock:
+            self.pwm_a.ChangeDutyCycle(35)
+            self.pwm_b.ChangeDutyCycle(35)
+            GPIO.output(PINS['L298N_IN1'], GPIO.LOW)
+            GPIO.output(PINS['L298N_IN2'], GPIO.HIGH)
+            GPIO.output(PINS['L298N_IN3'], GPIO.LOW)
+            GPIO.output(PINS['L298N_IN4'], GPIO.HIGH)
     
     def turn_left(self):
-        self.pwm_a.ChangeDutyCycle(50)
-        self.pwm_b.ChangeDutyCycle(50)
-        GPIO.output(PINS['L298N_IN1'], GPIO.LOW)
-        GPIO.output(PINS['L298N_IN2'], GPIO.HIGH)
-        GPIO.output(PINS['L298N_IN3'], GPIO.HIGH)
-        GPIO.output(PINS['L298N_IN4'], GPIO.LOW)
+        with self._lock:
+            self.pwm_a.ChangeDutyCycle(50)
+            self.pwm_b.ChangeDutyCycle(50)
+            GPIO.output(PINS['L298N_IN1'], GPIO.LOW)
+            GPIO.output(PINS['L298N_IN2'], GPIO.HIGH)
+            GPIO.output(PINS['L298N_IN3'], GPIO.HIGH)
+            GPIO.output(PINS['L298N_IN4'], GPIO.LOW)
     
     def turn_right(self):
-        self.pwm_a.ChangeDutyCycle(50)
-        self.pwm_b.ChangeDutyCycle(50)
-        GPIO.output(PINS['L298N_IN1'], GPIO.HIGH)
-        GPIO.output(PINS['L298N_IN2'], GPIO.LOW)
-        GPIO.output(PINS['L298N_IN3'], GPIO.LOW)
-        GPIO.output(PINS['L298N_IN4'], GPIO.HIGH)
+        with self._lock:
+            self.pwm_a.ChangeDutyCycle(50)
+            self.pwm_b.ChangeDutyCycle(50)
+            GPIO.output(PINS['L298N_IN1'], GPIO.HIGH)
+            GPIO.output(PINS['L298N_IN2'], GPIO.LOW)
+            GPIO.output(PINS['L298N_IN3'], GPIO.LOW)
+            GPIO.output(PINS['L298N_IN4'], GPIO.HIGH)
     
     def stop(self):
-        GPIO.output(PINS['L298N_IN1'], GPIO.LOW)
-        GPIO.output(PINS['L298N_IN2'], GPIO.LOW)
-        GPIO.output(PINS['L298N_IN3'], GPIO.LOW)
-        GPIO.output(PINS['L298N_IN4'], GPIO.LOW)
-        self.pwm_a.ChangeDutyCycle(0)
-        self.pwm_b.ChangeDutyCycle(0)
+        with self._lock:
+            GPIO.output(PINS['L298N_IN1'], GPIO.LOW)
+            GPIO.output(PINS['L298N_IN2'], GPIO.LOW)
+            GPIO.output(PINS['L298N_IN3'], GPIO.LOW)
+            GPIO.output(PINS['L298N_IN4'], GPIO.LOW)
+            self.pwm_a.ChangeDutyCycle(0)
+            self.pwm_b.ChangeDutyCycle(0)
     
     def cleanup(self):
         self.running = False
@@ -231,9 +124,12 @@ class MotorController:
         if self.pwm_b:
             self.pwm_b.stop()
 
+
 class ObstacleDetector:
     def __init__(self):
         self.distance = 999
+        self.last_ir = [0, 0, 0, 0]
+        self._lock = threading.Lock()
     
     def setup(self):
         GPIO.setup(PINS['ULTRASONIC_TRIG'], GPIO.OUT)
@@ -267,42 +163,49 @@ class ObstacleDetector:
                 return 999
             
             dist = (end - start) * 17150
-            self.distance = dist if 2 < dist < 400 else 999
+            with self._lock:
+                self.distance = dist if 2 < dist < 400 else 999
             return self.distance
         except:
             return 999
     
     def get_ir(self):
-        return [
-            1 if GPIO.input(PINS['IR_TOP_LEFT']) == 0 else 0,
-            1 if GPIO.input(PINS['IR_TOP_RIGHT']) == 0 else 0,
-            1 if GPIO.input(PINS['IR_BOTTOM_LEFT']) == 0 else 0,
-            1 if GPIO.input(PINS['IR_BOTTOM_RIGHT']) == 0 else 0
-        ]
+        with self._lock:
+            self.last_ir = [
+                1 if GPIO.input(PINS['IR_TOP_LEFT']) == 0 else 0,
+                1 if GPIO.input(PINS['IR_TOP_RIGHT']) == 0 else 0,
+                1 if GPIO.input(PINS['IR_BOTTOM_LEFT']) == 0 else 0,
+                1 if GPIO.input(PINS['IR_BOTTOM_RIGHT']) == 0 else 0
+            ]
+            return self.last_ir.copy()
     
-    def analyze(self):
-        dist = self.get_distance()
+    def get_sensor_data(self):
+        """Get all sensor data in one call"""
+        distance = self.get_distance()
         ir = self.get_ir()
-        
-        if dist < CRITICAL_DISTANCE:
-            return 'BACK'
-        if dist < OBSTACLE_THRESHOLD:
-            if ir[0] == 0:
-                return 'LEFT'
-            if ir[1] == 0:
-                return 'RIGHT'
-            return 'TURN'
-        return 'FWD'
+        return {
+            'distance': distance if distance < 999 else None,
+            'ir_top_left': bool(ir[0]),
+            'ir_top_right': bool(ir[1]),
+            'ir_bottom_left': bool(ir[2]),
+            'ir_bottom_right': bool(ir[3])
+        }
+
 
 class NavigationSystem:
     def __init__(self):
         self.motors = MotorController()
         self.detector = ObstacleDetector()
-        self.ble = BLEBeacon()
         self.compass = None
         self.running = False
         self.auto_mode = True
         self.is_moving = False
+        self.mission_active = False
+        self.current_heading = None
+        self.mission_progress = 0
+        self._status_lock = threading.Lock()
+        
+        # LED state
         self.led2_blink_state = False
         self.last_led2_toggle = 0.0
         self.led2_blink_interval = 0.2
@@ -335,8 +238,7 @@ class NavigationSystem:
     
     def initialize(self):
         print("\n" + "="*50)
-        print("   PiRover Navigation System")
-        print("   BLE Beacon Broadcasting")
+        print("   PiRover Web Server System")
         print("="*50)
         
         GPIO.setmode(GPIO.BCM)
@@ -344,21 +246,17 @@ class NavigationSystem:
         self.setup_indicators()
         GPIO.output(PINS['LED1'], GPIO.HIGH)
         
-        # Initialize BLE beacon
-        if not self.ble.start():
-            print("⚠️ BLE not available - running without beacon")
-        
         # Initialize hardware
         self.motors.setup()
         self.detector.setup()
 
-        # Initialize compass for mission turns
+        # Initialize compass
         try:
             self.compass = HMC5883L()
             print("✅ Compass ready")
         except Exception as e:
             self.compass = None
-            print(f"⚠️ Compass unavailable ({e}) - falling back to timed turns")
+            print(f"⚠️ Compass unavailable ({e})")
         
         # Ready signal
         self.beep(0.2)
@@ -366,33 +264,47 @@ class NavigationSystem:
         self.beep(0.2)
         
         print(f"\n✅ System Ready! (Cruise speed: {ROVER_SPEED}%)")
-        print(f"🤖 Mode: AUTO SQUARE MISSION (default)")
-        print(f"📡 BLE Beacon: {DEVICE_NAME}")
-        print("   Broadcasting sensor data every 0.2s")
-        print(f"   Mission: {MISSION_SIDES} sides, right 90° at < {SAFE_DISTANCE}cm")
+        print(f"🌐 API Server: http://{API_HOST}:{API_PORT}")
+        print(f"📡 Endpoints:")
+        print("   GET  /status         - Get all sensor data and status")
+        print("   GET  /sensors        - Get sensor readings only")
+        print("   POST /control        - Control rover movement")
+        print("   POST /speed          - Set motor speed")
+        print("   POST /mission/start  - Start square mission")
+        print("   POST /mission/stop   - Stop current mission")
+        print("   POST /mode           - Set auto/manual mode")
         print("\nPress Ctrl+C to stop\n")
         
         return True
     
-    def broadcast_sensor_data(self):
-        """Broadcast sensor data via BLE beacon"""
-        if not self.ble.running:
-            return
+    def get_status(self):
+        """Get comprehensive status for API"""
+        sensor_data = self.detector.get_sensor_data()
         
-        distance = int(self.detector.distance) if self.detector.distance < 999 else 999
-        ir = self.detector.get_ir()
-        speed = self.motors.current_speed
+        with self._status_lock:
+            heading = self.current_heading
+            mission_active = self.mission_active
+            mission_progress = self.mission_progress
         
-        self.ble.broadcast(distance, speed, self.auto_mode, ir)
-
-    @staticmethod
-    def _normalize_heading(heading):
-        return heading % 360.0
-
-    @staticmethod
-    def _angle_error(current, target):
-        return ((target - current + 540.0) % 360.0) - 180.0
-
+        return {
+            'status': {
+                'running': self.running,
+                'auto_mode': self.auto_mode,
+                'is_moving': self.is_moving,
+                'mission_active': mission_active,
+                'mission_progress': mission_progress
+            },
+            'sensors': sensor_data,
+            'motors': {
+                'current_speed': self.motors.current_speed,
+                'speed_percent': self.motors.current_speed
+            },
+            'navigation': {
+                'heading': heading,
+                'heading_available': heading is not None
+            }
+        }
+    
     def read_heading(self, samples=5):
         if not self.compass:
             return None
@@ -408,7 +320,19 @@ class NavigationSystem:
 
         if not headings:
             return None
-        return sum(headings) / len(headings)
+        
+        heading = sum(headings) / len(headings)
+        with self._status_lock:
+            self.current_heading = heading
+        return heading
+
+    @staticmethod
+    def _normalize_heading(heading):
+        return heading % 360.0
+
+    @staticmethod
+    def _angle_error(current, target):
+        return ((target - current + 540.0) % 360.0) - 180.0
 
     def turn_right_90(self):
         start_heading = self.read_heading()
@@ -453,7 +377,6 @@ class NavigationSystem:
                 print(f"\r✅ Turn done   heading:{heading:6.1f}° err:{error:6.1f}°")
                 return True
 
-            self.broadcast_sensor_data()
             time.sleep(0.04)
 
         self.motors.stop()
@@ -463,9 +386,11 @@ class NavigationSystem:
 
     def run_square_mission(self):
         side_index = 0
-        last_broadcast = time.time()
+        with self._status_lock:
+            self.mission_active = True
+            self.mission_progress = 0
 
-        while self.running and side_index < MISSION_SIDES:
+        while self.running and side_index < MISSION_SIDES and self.mission_active:
             side_number = side_index + 1
             print(f"\n\n🟩 Side {side_number}/{MISSION_SIDES} - moving forward")
 
@@ -473,7 +398,7 @@ class NavigationSystem:
             self.motors.set_speed(current_speed)
             last_ramp = time.time()
 
-            while self.running:
+            while self.running and self.mission_active:
                 self.update_led2_blink()
 
                 dist = self.detector.get_distance()
@@ -506,49 +431,256 @@ class NavigationSystem:
                     end=''
                 )
 
-                if now - last_broadcast >= 0.2:
-                    self.broadcast_sensor_data()
-                    last_broadcast = now
-
                 time.sleep(0.05)
 
-            if not self.running:
-                return False
+            if not self.running or not self.mission_active:
+                break
 
             self.turn_right_90()
             side_index += 1
+            with self._status_lock:
+                self.mission_progress = (side_index / MISSION_SIDES) * 100
 
         self.motors.stop()
         self.set_moving(False)
-        print("\n\n🏁 Square mission complete. Returned to base path.")
+        with self._status_lock:
+            self.mission_active = False
+            self.mission_progress = 100 if side_index >= MISSION_SIDES else 0
+        
+        if side_index >= MISSION_SIDES:
+            print("\n\n🏁 Square mission complete. Returned to base path.")
         return True
     
     def run(self):
         self.running = True
         
         try:
+            # Start the Flask server in a separate thread
+            api_thread = threading.Thread(target=self.run_api_server, daemon=True)
+            api_thread.start()
+            
+            # Main loop - run mission if in auto mode
             while self.running:
-                if self.auto_mode:
+                if self.auto_mode and not self.mission_active:
                     self.run_square_mission()
-                    self.running = False
-                else:
-                    self.set_moving(False)
-
-                time.sleep(0.05)
+                time.sleep(0.1)
                 
         except KeyboardInterrupt:
             print("\n\n🛑 Stopping...")
         finally:
             self.stop()
     
+    def run_api_server(self):
+        """Run Flask API server in a separate thread"""
+        global nav_system
+        nav_system = self
+        app.run(host=API_HOST, port=API_PORT, debug=False, use_reloader=False)
+    
     def stop(self):
         self.running = False
+        with self._status_lock:
+            self.mission_active = False
         self.set_moving(False)
         self.motors.stop()
-        self.ble.stop()
         GPIO.output(PINS['LED1'], GPIO.LOW)
         GPIO.cleanup()
         print("✅ System stopped")
+
+
+# ========== FLASK API ROUTES ==========
+
+@app.route('/status', methods=['GET'])
+def get_status():
+    """Get complete rover status including all sensors"""
+    if nav_system is None:
+        return jsonify({'error': 'System not initialized'}), 503
+    return jsonify(nav_system.get_status())
+
+
+@app.route('/sensors', methods=['GET'])
+def get_sensors():
+    """Get only sensor readings"""
+    if nav_system is None:
+        return jsonify({'error': 'System not initialized'}), 503
+    return jsonify(nav_system.detector.get_sensor_data())
+
+
+@app.route('/control', methods=['POST'])
+def control_rover():
+    """Control rover movement"""
+    if nav_system is None:
+        return jsonify({'error': 'System not initialized'}), 503
+    
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'Missing JSON body'}), 400
+    
+    command = data.get('command', '').lower()
+    
+    # If auto mode is on, stop auto mission first
+    if nav_system.auto_mode:
+        with nav_system._status_lock:
+            nav_system.mission_active = False
+        nav_system.motors.stop()
+        nav_system.set_moving(False)
+        # Switch to manual mode
+        nav_system.auto_mode = False
+        print("🔄 Switched to manual control")
+    
+    # Execute command
+    if command == 'forward':
+        nav_system.set_moving(True)
+        nav_system.motors.forward()
+    elif command == 'backward':
+        nav_system.set_moving(True)
+        nav_system.motors.backward()
+    elif command == 'left':
+        nav_system.set_moving(True)
+        nav_system.motors.turn_left()
+    elif command == 'right':
+        nav_system.set_moving(True)
+        nav_system.motors.turn_right()
+    elif command == 'stop':
+        nav_system.motors.stop()
+        nav_system.set_moving(False)
+    else:
+        return jsonify({'error': f'Unknown command: {command}'}), 400
+    
+    return jsonify({
+        'status': 'ok',
+        'command': command,
+        'auto_mode': nav_system.auto_mode
+    })
+
+
+@app.route('/speed', methods=['POST'])
+def set_speed():
+    """Set motor speed (0-100)"""
+    if nav_system is None:
+        return jsonify({'error': 'System not initialized'}), 503
+    
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'Missing JSON body'}), 400
+    
+    speed = data.get('speed')
+    if speed is None:
+        return jsonify({'error': 'Missing speed parameter'}), 400
+    
+    try:
+        speed = int(speed)
+        if speed < 0 or speed > 100:
+            return jsonify({'error': 'Speed must be between 0 and 100'}), 400
+    except ValueError:
+        return jsonify({'error': 'Speed must be an integer'}), 400
+    
+    nav_system.motors.set_speed(speed)
+    return jsonify({
+        'status': 'ok',
+        'speed': speed,
+        'message': f'Speed set to {speed}%'
+    })
+
+
+@app.route('/mission/start', methods=['POST'])
+def start_mission():
+    """Start the square mission"""
+    if nav_system is None:
+        return jsonify({'error': 'System not initialized'}), 503
+    
+    if nav_system.mission_active:
+        return jsonify({'error': 'Mission already running'}), 409
+    
+    data = request.get_json() or {}
+    sides = data.get('sides', MISSION_SIDES)
+    
+    # Update mission parameters
+    # global MISSION_SIDES
+    MISSION_SIDES = sides
+    
+    nav_system.auto_mode = True
+    with nav_system._status_lock:
+        nav_system.mission_active = True
+        nav_system.mission_progress = 0
+    
+    return jsonify({
+        'status': 'ok',
+        'message': f'Starting square mission with {sides} sides',
+        'auto_mode': True
+    })
+
+
+@app.route('/mission/stop', methods=['POST'])
+def stop_mission():
+    """Stop the current mission"""
+    if nav_system is None:
+        return jsonify({'error': 'System not initialized'}), 503
+    
+    with nav_system._status_lock:
+        nav_system.mission_active = False
+        nav_system.mission_progress = 0
+    
+    nav_system.motors.stop()
+    nav_system.set_moving(False)
+    
+    return jsonify({
+        'status': 'ok',
+        'message': 'Mission stopped',
+        'auto_mode': nav_system.auto_mode
+    })
+
+
+@app.route('/mode', methods=['POST'])
+def set_mode():
+    """Set auto or manual mode"""
+    if nav_system is None:
+        return jsonify({'error': 'System not initialized'}), 503
+    
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'Missing JSON body'}), 400
+    
+    auto_mode = data.get('auto_mode')
+    if auto_mode is None:
+        return jsonify({'error': 'Missing auto_mode parameter'}), 400
+    
+    nav_system.auto_mode = bool(auto_mode)
+    
+    # If switching to manual, stop any ongoing mission
+    if not nav_system.auto_mode:
+        with nav_system._status_lock:
+            nav_system.mission_active = False
+        nav_system.motors.stop()
+        nav_system.set_moving(False)
+    
+    return jsonify({
+        'status': 'ok',
+        'auto_mode': nav_system.auto_mode,
+        'message': f'Switched to {"AUTO" if nav_system.auto_mode else "MANUAL"} mode'
+    })
+
+
+@app.route('/heading', methods=['GET'])
+def get_heading():
+    """Get current compass heading"""
+    if nav_system is None:
+        return jsonify({'error': 'System not initialized'}), 503
+    
+    heading = nav_system.read_heading()
+    return jsonify({
+        'heading': heading,
+        'available': heading is not None
+    })
+
+
+@app.route('/ping', methods=['GET'])
+def ping():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'ok',
+        'message': 'PiRover API is running'
+    })
+
 
 def main():
     nav = NavigationSystem()
