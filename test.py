@@ -383,22 +383,43 @@ def test_dht11():
     print("\n🌡️  TESTING DHT11 SENSOR")
     
     try:
-        import Adafruit_DHT
+        import board
+        import adafruit_dht
+        import time
         
-        humidity, temperature = Adafruit_DHT.read_retry(
-            Adafruit_DHT.DHT11, 
-            PINS['DHT11']
-        )
+        # Initialize DHT11 sensor
+        dht = adafruit_dht.DHT11(board.D4)  # Default GPIO 4, adjust if needed
         
-        if humidity is not None and temperature is not None:
-            print(f"  🌡️  Temperature: {temperature:.1f}°C")
-            print(f"  💧 Humidity: {humidity:.1f}%")
-        else:
-            print("  ❌ Failed to read DHT11")
-            print("  Check wiring and 10kΩ pull-up resistor")
+        # Allow sensor to stabilize
+        time.sleep(2.0)
+        
+        try:
+            # Read temperature and humidity
+            temperature = dht.temperature
+            humidity = dht.humidity
             
-    except ImportError:
-        print("  ❌ Install: sudo pip3 install Adafruit_DHT")
+            if temperature is not None and humidity is not None:
+                print(f"  🌡️  Temperature: {temperature:.1f}°C")
+                print(f"  💧 Humidity: {humidity:.1f}%")
+            else:
+                print("  ❌ Failed to read DHT11")
+                print("  Check wiring and 10kΩ pull-up resistor")
+                
+        except RuntimeError as error:
+            print(f"  ❌ Reading error: {error}")
+            print("  This can happen with poor connections or interference")
+            print("  Try re-seating the sensor or checking wiring")
+        finally:
+            # Clean up GPIO
+            dht.exit()
+            
+    except ImportError as e:
+        print("  ❌ Install required libraries:")
+        print("  pip install adafruit-circuitpython-dht")
+        print("  sudo apt-get install python3-libgpiod")
+    except ValueError as e:
+        print(f"  ❌ Invalid pin: {e}")
+        print("  Check the GPIO pin number in the configuration")
     except Exception as e:
         print(f"  ❌ Error: {e}")
     
