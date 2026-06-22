@@ -9,6 +9,7 @@ import time
 import threading
 import json
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from collections import deque
 from compass import HMC5883L
 
@@ -39,6 +40,7 @@ NAVIGATION_MODE = 'manual'  # 'manual' or 'auto'
 
 # ========== FLASK APP ==========
 app = Flask(__name__)
+CORS(app)
 nav_system = None  # Will be set during initialization
 
 
