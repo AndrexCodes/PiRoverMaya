@@ -27,7 +27,7 @@ ROVER_SPEED = 20
 OBSTACLE_THRESHOLD = 30
 CRITICAL_DISTANCE = 15
 TURN_DURATION = 0.8
-SAFE_DISTANCE = 20
+SAFE_DISTANCE = 25
 MISSION_SIDES = 4
 START_SPEED = 10
 SPEED_STEP = 2
@@ -35,6 +35,7 @@ SPEED_RAMP_INTERVAL = 0.35
 TURN_TOLERANCE_DEG = 4.0
 API_HOST = '0.0.0.0'
 API_PORT = 5000
+NAVIGATION_MODE = 'manual'  # 'manual' or 'auto'
 
 # ========== FLASK APP ==========
 app = Flask(__name__)
@@ -198,12 +199,14 @@ class NavigationSystem:
         self.detector = ObstacleDetector()
         self.compass = None
         self.running = False
-        self.auto_mode = True
+        self.auto_mode = False  # Default to manual
         self.is_moving = False
         self.mission_active = False
         self.current_heading = None
         self.mission_progress = 0
         self._status_lock = threading.Lock()
+        self.navigation_mode = 'manual'  # 'manual' or 'auto'
+        self.manual_command = 'stop'  # Last manual command
         
         # LED state
         self.led2_blink_state = False
@@ -266,13 +269,14 @@ class NavigationSystem:
         print(f"\n✅ System Ready! (Cruise speed: {ROVER_SPEED}%)")
         print(f"🌐 API Server: http://{API_HOST}:{API_PORT}")
         print(f"📡 Endpoints:")
-        print("   GET  /status         - Get all sensor data and status")
-        print("   GET  /sensors        - Get sensor readings only")
-        print("   POST /control        - Control rover movement")
-        print("   POST /speed          - Set motor speed")
-        print("   POST /mission/start  - Start square mission")
-        print("   POST /mission/stop   - Stop current mission")
-        print("   POST /mode           - Set auto/manual mode")
+        print("   GET  /status              - Get all sensor data and status")
+        print("   GET  /sensors             - Get sensor readings only")
+        print("   POST /control             - Control rover movement")
+        print("   POST /speed               - Set motor speed")
+        print("   POST /mission/start       - Start square mission")
+        print("   POST /mission/stop        - Stop current mission")
+        print("   POST /mode                - Set auto/manual mode")
+        print("   POST /navigation/mode     - Set navigation mode (manual/auto)")
         print("\nPress Ctrl+C to stop\n")
         
         return True
@@ -290,9 +294,11 @@ class NavigationSystem:
             'status': {
                 'running': self.running,
                 'auto_mode': self.auto_mode,
+                'navigation_mode': self.navigation_mode,
                 'is_moving': self.is_moving,
                 'mission_active': mission_active,
-                'mission_progress': mission_progress
+                'mission_progress': mission_progress,
+                'manual_command': self.manual_command
             },
             'sensors': sensor_data,
             'motors': {
@@ -405,6 +411,7 @@ class NavigationSystem:
                 ir = self.detector.get_ir()
                 ir_str = ''.join(['X' if x else '.' for x in ir])
 
+                # Check for obstacles
                 if dist < SAFE_DISTANCE:
                     self.motors.stop()
                     self.set_moving(False)
@@ -412,12 +419,14 @@ class NavigationSystem:
                     print(f"\n🛑 Safe distance reached ({int(dist)}cm). Preparing right turn...")
                     break
 
+                # Speed ramping
                 now = time.time()
                 if now - last_ramp >= SPEED_RAMP_INTERVAL and current_speed < ROVER_SPEED:
                     current_speed = min(ROVER_SPEED, current_speed + SPEED_STEP)
                     self.motors.set_speed(current_speed)
                     last_ramp = now
 
+                # Move forward
                 self.set_moving(True)
                 self.motors.forward()
 
@@ -450,6 +459,38 @@ class NavigationSystem:
         if side_index >= MISSION_SIDES:
             print("\n\n🏁 Square mission complete. Returned to base path.")
         return True
+
+    def run_manual_navigation(self):
+        """Run manual navigation based on commands received via API"""
+        while self.running and self.navigation_mode == 'manual':
+            # Execute manual command
+            if self.manual_command == 'forward':
+                dist = self.detector.get_distance()
+                if dist < SAFE_DISTANCE:
+                    self.motors.stop()
+                    self.set_moving(False)
+                    print(f"\r🛑 Obstacle detected at {int(dist)}cm", end='')
+                else:
+                    self.set_moving(True)
+                    self.motors.forward()
+            elif self.manual_command == 'backward':
+                self.set_moving(True)
+                self.motors.backward()
+            elif self.manual_command == 'left':
+                self.set_moving(True)
+                self.motors.turn_left()
+            elif self.manual_command == 'right':
+                self.set_moving(True)
+                self.motors.turn_right()
+            elif self.manual_command == 'stop':
+                self.motors.stop()
+                self.set_moving(False)
+            
+            # Update LED blink
+            self.update_led2_blink()
+            
+            # Short sleep to prevent CPU overload
+            time.sleep(0.05)
     
     def run(self):
         self.running = True
@@ -459,11 +500,14 @@ class NavigationSystem:
             api_thread = threading.Thread(target=self.run_api_server, daemon=True)
             api_thread.start()
             
-            # Main loop - run mission if in auto mode
+            # Main loop - handle navigation modes
             while self.running:
-                if self.auto_mode and not self.mission_active:
+                if self.navigation_mode == 'auto' and not self.mission_active:
                     self.run_square_mission()
-                time.sleep(0.1)
+                elif self.navigation_mode == 'manual':
+                    self.run_manual_navigation()
+                else:
+                    time.sleep(0.1)
                 
         except KeyboardInterrupt:
             print("\n\n🛑 Stopping...")
@@ -507,7 +551,7 @@ def get_sensors():
 
 @app.route('/control', methods=['POST'])
 def control_rover():
-    """Control rover movement"""
+    """Control rover movement (only works in manual mode)"""
     if nav_system is None:
         return jsonify({'error': 'System not initialized'}), 503
     
@@ -516,39 +560,34 @@ def control_rover():
         return jsonify({'error': 'Missing JSON body'}), 400
     
     command = data.get('command', '').lower()
+    valid_commands = ['forward', 'backward', 'left', 'right', 'stop']
     
-    # If auto mode is on, stop auto mission first
+    if command not in valid_commands:
+        return jsonify({'error': f'Unknown command: {command}'}), 400
+    
+    # Check if in manual mode
+    if nav_system.navigation_mode != 'manual':
+        return jsonify({
+            'error': f'Cannot control in {nav_system.navigation_mode} mode',
+            'navigation_mode': nav_system.navigation_mode
+        }), 403
+    
+    # Stop any running mission if auto mode was active
     if nav_system.auto_mode:
         with nav_system._status_lock:
             nav_system.mission_active = False
         nav_system.motors.stop()
         nav_system.set_moving(False)
-        # Switch to manual mode
         nav_system.auto_mode = False
         print("🔄 Switched to manual control")
     
-    # Execute command
-    if command == 'forward':
-        nav_system.set_moving(True)
-        nav_system.motors.forward()
-    elif command == 'backward':
-        nav_system.set_moving(True)
-        nav_system.motors.backward()
-    elif command == 'left':
-        nav_system.set_moving(True)
-        nav_system.motors.turn_left()
-    elif command == 'right':
-        nav_system.set_moving(True)
-        nav_system.motors.turn_right()
-    elif command == 'stop':
-        nav_system.motors.stop()
-        nav_system.set_moving(False)
-    else:
-        return jsonify({'error': f'Unknown command: {command}'}), 400
+    # Store the manual command for the manual navigation loop
+    nav_system.manual_command = command
     
     return jsonify({
         'status': 'ok',
         'command': command,
+        'navigation_mode': nav_system.navigation_mode,
         'auto_mode': nav_system.auto_mode
     })
 
@@ -584,9 +623,15 @@ def set_speed():
 
 @app.route('/mission/start', methods=['POST'])
 def start_mission():
-    """Start the square mission"""
+    """Start the square mission (only works in auto mode)"""
     if nav_system is None:
         return jsonify({'error': 'System not initialized'}), 503
+    
+    if nav_system.navigation_mode != 'auto':
+        return jsonify({
+            'error': f'Cannot start mission in {nav_system.navigation_mode} mode',
+            'navigation_mode': nav_system.navigation_mode
+        }), 403
     
     if nav_system.mission_active:
         return jsonify({'error': 'Mission already running'}), 409
@@ -595,7 +640,7 @@ def start_mission():
     sides = data.get('sides', MISSION_SIDES)
     
     # Update mission parameters
-    # global MISSION_SIDES
+    global MISSION_SIDES
     MISSION_SIDES = sides
     
     nav_system.auto_mode = True
@@ -606,6 +651,7 @@ def start_mission():
     return jsonify({
         'status': 'ok',
         'message': f'Starting square mission with {sides} sides',
+        'navigation_mode': nav_system.navigation_mode,
         'auto_mode': True
     })
 
@@ -626,13 +672,14 @@ def stop_mission():
     return jsonify({
         'status': 'ok',
         'message': 'Mission stopped',
+        'navigation_mode': nav_system.navigation_mode,
         'auto_mode': nav_system.auto_mode
     })
 
 
 @app.route('/mode', methods=['POST'])
 def set_mode():
-    """Set auto or manual mode"""
+    """Set auto or manual mode (legacy compatibility)"""
     if nav_system is None:
         return jsonify({'error': 'System not initialized'}), 503
     
@@ -644,19 +691,77 @@ def set_mode():
     if auto_mode is None:
         return jsonify({'error': 'Missing auto_mode parameter'}), 400
     
-    nav_system.auto_mode = bool(auto_mode)
-    
-    # If switching to manual, stop any ongoing mission
-    if not nav_system.auto_mode:
+    # Set navigation mode based on auto_mode
+    if bool(auto_mode):
+        nav_system.navigation_mode = 'auto'
+        nav_system.auto_mode = True
+    else:
+        nav_system.navigation_mode = 'manual'
+        nav_system.auto_mode = False
+        # Stop any ongoing mission
         with nav_system._status_lock:
             nav_system.mission_active = False
         nav_system.motors.stop()
         nav_system.set_moving(False)
+        nav_system.manual_command = 'stop'
     
     return jsonify({
         'status': 'ok',
+        'navigation_mode': nav_system.navigation_mode,
         'auto_mode': nav_system.auto_mode,
-        'message': f'Switched to {"AUTO" if nav_system.auto_mode else "MANUAL"} mode'
+        'message': f'Switched to {nav_system.navigation_mode.upper()} mode'
+    })
+
+
+@app.route('/navigation/mode', methods=['POST'])
+def set_navigation_mode():
+    """Set navigation mode to 'manual' or 'auto'"""
+    if nav_system is None:
+        return jsonify({'error': 'System not initialized'}), 503
+    
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'Missing JSON body'}), 400
+    
+    mode = data.get('mode', '').lower()
+    if mode not in ['manual', 'auto']:
+        return jsonify({'error': 'Mode must be "manual" or "auto"'}), 400
+    
+    # Update mode
+    nav_system.navigation_mode = mode
+    
+    if mode == 'auto':
+        nav_system.auto_mode = True
+        # Stop manual commands
+        nav_system.manual_command = 'stop'
+    else:
+        nav_system.auto_mode = False
+        # Stop any ongoing mission
+        with nav_system._status_lock:
+            nav_system.mission_active = False
+        nav_system.motors.stop()
+        nav_system.set_moving(False)
+        nav_system.manual_command = 'stop'
+    
+    return jsonify({
+        'status': 'ok',
+        'navigation_mode': nav_system.navigation_mode,
+        'auto_mode': nav_system.auto_mode,
+        'message': f'Switched to {mode.upper()} navigation mode'
+    })
+
+
+@app.route('/navigation/mode', methods=['GET'])
+def get_navigation_mode():
+    """Get current navigation mode"""
+    if nav_system is None:
+        return jsonify({'error': 'System not initialized'}), 503
+    
+    return jsonify({
+        'navigation_mode': nav_system.navigation_mode,
+        'auto_mode': nav_system.auto_mode,
+        'mission_active': nav_system.mission_active,
+        'mission_progress': nav_system.mission_progress
     })
 
 
