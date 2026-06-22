@@ -640,7 +640,6 @@ def start_mission():
     sides = data.get('sides', MISSION_SIDES)
     
     # Update mission parameters
-    global MISSION_SIDES
     MISSION_SIDES = sides
     
     nav_system.auto_mode = True
