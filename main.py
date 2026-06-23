@@ -92,7 +92,7 @@ class MotorController:
             GPIO.output(PINS['L298N_IN2'], GPIO.LOW)
             GPIO.output(PINS['L298N_IN3'], GPIO.HIGH)
             GPIO.output(PINS['L298N_IN4'], GPIO.LOW)
-            logger.debug("Motor: FORWARD")
+            # logger.debug("Motor: FORWARD")
     
     def backward(self):
         with self._lock:
@@ -102,7 +102,7 @@ class MotorController:
             GPIO.output(PINS['L298N_IN2'], GPIO.HIGH)
             GPIO.output(PINS['L298N_IN3'], GPIO.LOW)
             GPIO.output(PINS['L298N_IN4'], GPIO.HIGH)
-            logger.debug("Motor: BACKWARD")
+            # logger.debug("Motor: BACKWARD")
     
     def turn_left(self):
         with self._lock:
@@ -112,7 +112,7 @@ class MotorController:
             GPIO.output(PINS['L298N_IN2'], GPIO.HIGH)
             GPIO.output(PINS['L298N_IN3'], GPIO.HIGH)
             GPIO.output(PINS['L298N_IN4'], GPIO.LOW)
-            logger.debug("Motor: TURN LEFT")
+            # logger.debug("Motor: TURN LEFT")
     
     def turn_right(self):
         with self._lock:
@@ -122,7 +122,7 @@ class MotorController:
             GPIO.output(PINS['L298N_IN2'], GPIO.LOW)
             GPIO.output(PINS['L298N_IN3'], GPIO.LOW)
             GPIO.output(PINS['L298N_IN4'], GPIO.HIGH)
-            logger.debug("Motor: TURN RIGHT")
+            # logger.debug("Motor: TURN RIGHT")
     
     def stop(self):
         with self._lock:
@@ -132,7 +132,7 @@ class MotorController:
             GPIO.output(PINS['L298N_IN4'], GPIO.LOW)
             self.pwm_a.ChangeDutyCycle(0)
             self.pwm_b.ChangeDutyCycle(0)
-            logger.debug("Motor: STOP")
+            # logger.debug("Motor: STOP")
     
     def cleanup(self):
         self.running = False
@@ -141,7 +141,7 @@ class MotorController:
             self.pwm_a.stop()
         if self.pwm_b:
             self.pwm_b.stop()
-        logger.info("Motor cleanup complete")
+        # logger.info("Motor cleanup complete")
 
 
 class ObstacleDetector:
@@ -290,7 +290,7 @@ class NavigationSystem:
         if not moving:
             self.led2_blink_state = False
             GPIO.output(PINS['LED2'], GPIO.LOW)
-        logger.debug(f"Moving state: {moving}")
+        # logger.debug(f"Moving state: {moving}")
 
     def update_led2_blink(self):
         if not self.is_moving:
